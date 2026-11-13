@@ -1,5 +1,7 @@
 # QueueFlow — Queue Management System
 
+**Live demo:** https://queueflow-uujl.onrender.com (login: `admin` / `admin123`)
+
 A full-stack queue management app built for the Rugas Technologies internship assignment. A manager can log in, create multiple queues, add people, reorder them, serve the next person with one click, cancel tokens, and watch analytics.
 
 ## Features
