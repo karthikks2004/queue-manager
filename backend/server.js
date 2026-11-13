@@ -297,4 +297,11 @@ app.get('/api/analytics', auth, (req, res) => {
   }
 });
 
+// Serve built frontend (production)
+app.use(express.static(path.join(__dirname, '../frontend/dist')));
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/api')) return res.status(404).json({ error: 'Not found' });
+  res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
+});
+
 app.listen(PORT, () => console.log(`QueueFlow backend running on http://localhost:${PORT}`));
