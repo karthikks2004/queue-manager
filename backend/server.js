@@ -7,14 +7,14 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || 'queueflow_rugas_2024_jwt_secret';
+const JWT_SECRET = process.env.JWT_SECRET || require('crypto').randomBytes(32).toString('hex');
 
 app.use(cors());
 app.use(express.json());
 
 // DB setup — WAL mode for better concurrent reads
 // Built-in node:sqlite (no native compile needed); small shim keeps the better-sqlite3-style API
-const db = new DatabaseSync(path.join(__dirname, 'queue.db'));
+const db = new DatabaseSync(process.env.DB_PATH || path.join(__dirname, 'queue.db'));
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 db.transaction = (fn) => () => {
   db.exec('BEGIN');
@@ -62,6 +62,32 @@ if (!existing) {
   db.prepare('INSERT INTO managers (username, password) VALUES (?, ?)').run('admin', hash);
   console.log('Default admin created: admin / admin123');
 }
+
+
+// Demo data so a fresh deployment is never empty
+(function seedDemo() {
+  const admin = db.prepare('SELECT id FROM managers WHERE username = ?').get('admin');
+  if (!admin || db.prepare('SELECT COUNT(*) c FROM queues WHERE manager_id=?').get(admin.id).c > 0) return;
+  const mkQ = db.prepare('INSERT INTO queues (name, description, manager_id) VALUES (?, ?, ?)');
+  const mkT = db.prepare(`INSERT INTO tokens (token_number, person_name, phone, queue_id, position, status, priority, served_at, wait_time_seconds, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?))`);
+  const data = [
+    ['Hospital Reception', 'Main hospital OPD queue', ['Rahul Kumar','Priya Sharma','Ankit Singh','Deepa Nair','Vikram Patel','Meera Joshi']],
+    ['Bank Counter', 'Main branch services', ['Suresh Menon','Kavita Rao','Arjun Das']],
+    ['Service Desk', 'Vehicle registration and licence', []],
+  ];
+  data.forEach(([name, desc, people]) => {
+    const qid = mkQ.run(name, desc, admin.id).lastInsertRowid;
+    let pos = 0;
+    people.forEach((p, i) => {
+      const served = i < Math.floor(people.length / 3);
+      const mins = 40 - i * 5;
+      const num = `${name.substring(0,2).toUpperCase()}${1000 + i}-${String(i + 1).padStart(3,'0')}`;
+      if (served) mkT.run(num, p, '98765432' + (10 + i), qid, 0, 'served', 0, new Date().toISOString().replace('T',' ').slice(0,19), (mins - 10) * 60, `-${mins} minutes`);
+      else mkT.run(num, p, '98765432' + (10 + i), qid, ++pos, 'waiting', i === 3 ? 1 : 0, null, null, `-${mins} minutes`);
+    });
+  });
+})();
 
 // ── SSE ───────────────────────────────────────────────────
 const sseClients = new Map(); // managerId -> Set<res>
@@ -296,6 +322,8 @@ app.get('/api/analytics', auth, (req, res) => {
     res.status(500).json({ error: 'Analytics query failed' });
   }
 });
+
+app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 // Serve built frontend (production)
 app.use(express.static(path.join(__dirname, '../frontend/dist')));

@@ -83,3 +83,11 @@ frontend/   React app (pages: Login, Dashboard, QueueDetail, Analytics)
 ## Author
 
 Karthik K S — github.com/karthikks2004
+
+## Deploy (Render, free)
+
+1. Push this repo to GitHub.
+2. On render.com choose New, Blueprint, and select the repo. `render.yaml` sets everything up (build, start, a generated `JWT_SECRET`).
+3. Open the URL Render gives you and log in with the demo account.
+
+The database is recreated with demo data whenever the app starts on an empty disk. Free hosts sleep when idle, so a monitor that calls `/api/health` every 5 minutes keeps it awake.

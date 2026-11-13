@@ -1,0 +1,11 @@
+{
+  "name": "queueflow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "QueueFlow - queue management system",
+  "engines": { "node": ">=22.5.0" },
+  "scripts": {
+    "build": "npm --prefix backend install && npm --prefix frontend install --include=dev && npm --prefix frontend run build",
+    "start": "node backend/server.js"
+  }
+}
