@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react'
 import { tokens as tokensApi } from '../api'
 import type { Queue, Token } from '../api'
 import {
-  ArrowLeft, Plus, ChevronUp, ChevronDown, Check, X, Crown, Phone, Clock, Users, History, Megaphone,
+  ArrowLeft, Plus, Tv, ChevronUp, ChevronDown, Check, X, Crown, Phone, Clock, Users, History, Megaphone,
 } from 'lucide-react'
 import { TopBar, Modal, Notch, LiveDot, Footer, toast } from '../ui'
-import { timeAgo, formatDuration, errorMessage } from '../lib'
+import DisplayBoard from '../DisplayBoard'
+import { timeAgo, formatDuration, errorMessage, parseDate } from '../lib'
 
 interface Props { queue: Queue; token: string; onBack: () => void }
 
@@ -15,9 +16,27 @@ export default function QueueDetail({ queue, token, onBack }: Props) {
   const [tab, setTab] = useState<'queue' | 'history'>('queue')
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
+  const [showBoard, setShowBoard] = useState(false)
   const [form, setForm] = useState({ person_name: '', phone: '', priority: false, notes: '' })
   const [adding, setAdding] = useState(false)
   const [busy, setBusy] = useState<number | null>(null)
+  const rowRefs = useRef(new Map<number, HTMLLIElement>())
+  const lastTops = useRef(new Map<number, number>())
+
+  // FLIP: when the order changes, slide each row from its old spot to the new one.
+  useLayoutEffect(() => {
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const next = new Map<number, number>()
+    rowRefs.current.forEach((el, id) => {
+      const top = el.getBoundingClientRect().top
+      next.set(id, top)
+      const prev = lastTops.current.get(id)
+      if (!reduce && prev !== undefined && Math.abs(prev - top) > 1) {
+        el.animate([{ transform: `translateY(${prev - top}px)` }, { transform: 'none' }], { duration: 260, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' })
+      }
+    })
+    lastTops.current = next
+  }, [waiting])
 
   const load = useCallback(async () => {
     try {
@@ -76,6 +95,17 @@ export default function QueueDetail({ queue, token, onBack }: Props) {
   }
 
   const top = waiting[0]
+  const lastServed = history.find((t) => t.status === 'served') ?? null
+
+  // Typical gap between served people, from the latest served tokens (hidden until there is real data).
+  const serveTimes = history
+    .filter((t) => t.status === 'served' && t.served_at)
+    .map((t) => parseDate(t.served_at as string).getTime())
+    .sort((a, b) => a - b)
+    .slice(-10)
+  const gaps = serveTimes.slice(1).map((t, i) => t - serveTimes[i]).filter((g) => g > 30_000 && g < 3 * 3600_000)
+  const gapMs = gaps.length ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 0
+  const eta = (pos: number) => (gapMs ? `about ${formatDuration(Math.round((gapMs * (pos - 1)) / 1000))} to go` : '')
   const served = history.filter((t) => t.status === 'served').length
   const cancelled = history.filter((t) => t.status === 'cancelled').length
 
@@ -92,9 +122,14 @@ export default function QueueDetail({ queue, token, onBack }: Props) {
           </>
         }
         right={
-          <button onClick={() => setShowAdd(true)} className="btn btn-amber">
-            <Plus className="h-4 w-4" /> <span className="hidden sm:inline">Add person</span><span className="sm:hidden">Add</span>
-          </button>
+          <>
+            <button onClick={() => setShowBoard(true)} className="btn btn-ghost" title="Open the display board">
+              <Tv className="h-4 w-4" /> <span className="hidden sm:inline">Display board</span>
+            </button>
+            <button onClick={() => setShowAdd(true)} className="btn btn-amber">
+              <Plus className="h-4 w-4" /> <span className="hidden sm:inline">Add person</span><span className="sm:hidden">Add</span>
+            </button>
+          </>
         }
       />
 
@@ -174,6 +209,7 @@ export default function QueueDetail({ queue, token, onBack }: Props) {
                 return (
                   <li
                     key={t.id}
+                    ref={(el) => { if (el) rowRefs.current.set(t.id, el); else rowRefs.current.delete(t.id) }}
                     style={{ animationDelay: `${Math.min(idx, 8) * 40}ms` }}
                     className={`animate-slide-in relative flex items-stretch overflow-hidden rounded-xl border bg-surface transition ${first ? 'border-amber/50' : 'border-line hover:border-muted/40'}`}
                   >
@@ -198,6 +234,7 @@ export default function QueueDetail({ queue, token, onBack }: Props) {
                           <span className="font-mono">{t.token_number}</span>
                           {t.phone && <a href={`tel:${t.phone.replace(/[^0-9+]/g, '')}`} className="inline-flex items-center gap-1 hover:text-ink"><Phone className="h-3 w-3" />{t.phone}</a>}
                           <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />{timeAgo(t.created_at)}</span>
+                          {idx > 0 && eta(t.position) && <span className="text-sky">{eta(t.position)}</span>}
                         </p>
                         {t.notes && <p className="mt-1 truncate text-xs italic text-muted/80">“{t.notes}”</p>}
                       </div>
@@ -240,6 +277,10 @@ export default function QueueDetail({ queue, token, onBack }: Props) {
       </main>
 
       <Footer />
+
+      {showBoard && (
+        <DisplayBoard queueName={queue.name} nowServing={lastServed} upNext={waiting.slice(0, 5)} waitingCount={waiting.length} onClose={() => setShowBoard(false)} />
+      )}
 
       {showAdd && (
         <Modal title="Add to queue" onClose={() => setShowAdd(false)}>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { auth } from '../api'
 import { errorMessage } from '../lib'
 import { Wordmark, Logo, Footer } from '../ui'
@@ -6,35 +6,51 @@ import { AlertCircle, Eye, EyeOff, ArrowRight, Zap } from 'lucide-react'
 
 interface Props { onLogin: (token: string, username: string) => void }
 
+const PEOPLE = ['Rahul Kumar', 'Meera Joshi', 'Vikram Patel', 'Priya Sharma', 'Ankit Singh', 'Deepa Nair', 'Suresh Menon', 'Kavita Rao', 'Arjun Das', 'Nisha Thomas']
+
+/** A small self-running queue so the first screen shows what the product does. */
 function TicketStack() {
-  const rows = [
-    { n: 'B-107', who: 'Meera J.', r: '-6deg', x: 'translate-x-8 -translate-y-2', dim: true, d: '0.25s' },
-    { n: 'B-106', who: 'Vikram P.', r: '3deg', x: '-translate-x-2 translate-y-8', dim: true, d: '0.12s' },
-  ]
+  const [serial, setSerial] = useState(104)
+  const [counter, setCounter] = useState(2)
+  const [flash, setFlash] = useState(0)
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      setSerial((n) => n + 1)
+      setCounter((c) => (c % 3) + 1)
+      setFlash((f) => f + 1)
+    }, 3200)
+    return () => clearInterval(t)
+  }, [])
+
+  const label = (n: number) => `A-${String(n).padStart(3, '0')}`
+  const who = (n: number) => PEOPLE[n % PEOPLE.length]
+  const next = [1, 2, 3].map((i) => serial + i)
+
   return (
-    <div className="relative h-[380px] w-full max-w-[520px]" aria-hidden="true">
-      {rows.map((t) => (
-        <div
-          key={t.n}
-          style={{ ['--r' as any]: t.r, animationDelay: t.d }}
-          className={`animate-rise absolute left-0 top-6 w-[86%] rounded-2xl border border-line bg-raised p-5 opacity-80 ${t.x}`}
-        >
-          <p className="text-xs text-muted">Waiting</p>
-          <p className="font-mono text-2xl font-medium text-muted">{t.n}</p>
-          <p className="text-sm text-muted">{t.who}</p>
+    <div className="relative w-full max-w-[540px]" aria-hidden="true">
+      <div className="rounded-3xl border border-amber/30 bg-[#05070a] p-7 shadow-2xl shadow-black/60 sm:p-9">
+        <div className="flex items-center justify-between text-sm text-muted">
+          <span>Now serving</span>
+          <span className="inline-flex items-center gap-2 text-mint">
+            <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-mint opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-mint" /></span>
+            Counter {counter}
+          </span>
         </div>
-      ))}
-      <div
-        style={{ ['--r' as any]: '-2deg', animationDelay: '0.4s' }}
-        className="animate-rise absolute left-4 top-28 w-[94%] overflow-hidden rounded-2xl border border-amber/40 bg-[#07090c] p-8 shadow-2xl shadow-black/60"
-      >
-        <span className="absolute -left-2 top-[58%] h-4 w-4 rounded-full border border-amber/40 bg-surface" />
-        <span className="absolute -right-2 top-[58%] h-4 w-4 rounded-full border border-amber/40 bg-surface" />
-        <p className="text-xs text-muted">Now serving</p>
-        <p className="led text-7xl font-bold leading-tight">A-104</p>
-        <div className="mt-7 flex items-center justify-between border-t border-dashed border-line pt-4">
-          <span className="text-sm">Rahul Kumar</span>
-          <span className="text-xs text-mint">Counter 2</span>
+        <div key={flash} className="animate-tick">
+          <p className="led mt-2 text-7xl font-bold leading-tight sm:text-8xl">{label(serial)}</p>
+          <p className="mt-1 text-lg">{who(serial)}</p>
+        </div>
+        <div className="mt-6 border-t border-dashed border-line pt-4">
+          <p className="mb-3 text-xs text-muted">Up next</p>
+          <ul className="space-y-2">
+            {next.map((n, i) => (
+              <li key={n} className={`flex items-center justify-between rounded-xl border px-4 py-2.5 ${i === 0 ? 'border-amber/40 bg-amber/5' : 'border-line'}`}>
+                <span className={`font-mono text-lg ${i === 0 ? 'text-amber' : 'text-muted'}`}>{label(n)}</span>
+                <span className="text-sm text-muted">{who(n)}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
     </div>

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { analytics } from '../api'
 import type { Analytics } from '../api'
 import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell,
+  BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell,
 } from 'recharts'
 import { formatDuration, parseDate } from '../lib'
 
@@ -47,6 +47,12 @@ export default function AnalyticsDashboard() {
   if (!data) return <div className="panel px-6 py-14 text-center text-sm text-muted">Could not load analytics. Try refreshing the page.</div>
 
   const { summary: s, queueStats, hourlyTrend } = data
+  const lengthTrend = (data.lengthTrend || []).map((p) => ({
+    hour: parseDate(p.at).toLocaleTimeString([], { hour: 'numeric' }),
+    length: p.length,
+  }))
+  const peak = lengthTrend.reduce((m, p) => Math.max(m, p.length), 0)
+  const nowLen = lengthTrend.length ? lengthTrend[lengthTrend.length - 1].length : 0
   const finished = s.served + s.cancelled
   const serveRate = finished ? Math.round((s.served / finished) * 100) : 0
 
@@ -107,6 +113,34 @@ export default function AnalyticsDashboard() {
           </div>
         ))}
       </div>
+
+      <section className="panel p-5">
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="font-semibold">Queue length, last 24 hours</h2>
+            <p className="text-sm text-muted">People waiting across all your queues at the end of each hour.</p>
+          </div>
+          <div className="flex gap-6 text-sm">
+            <div><p className="text-muted">Now</p><p className="tabular text-2xl font-semibold text-amber">{nowLen}</p></div>
+            <div><p className="text-muted">Peak</p><p className="tabular text-2xl font-semibold">{peak}</p></div>
+          </div>
+        </div>
+        <ResponsiveContainer width="100%" height={220}>
+          <AreaChart data={lengthTrend} margin={{ top: 4, right: 8, left: -22, bottom: 0 }}>
+            <defs>
+              <linearGradient id="lenFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={C.amber} stopOpacity={0.35} />
+                <stop offset="100%" stopColor={C.amber} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 4" vertical={false} />
+            <XAxis dataKey="hour" tick={{ fill: C.tick, fontSize: 12 }} axisLine={false} tickLine={false} interval={3} />
+            <YAxis tick={{ fill: C.tick, fontSize: 12 }} axisLine={false} tickLine={false} allowDecimals={false} />
+            <Tooltip content={<ChartTip />} />
+            <Area type="stepAfter" dataKey="length" name="Waiting" stroke={C.amber} strokeWidth={2.5} fill="url(#lenFill)" />
+          </AreaChart>
+        </ResponsiveContainer>
+      </section>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <section className="panel p-5">

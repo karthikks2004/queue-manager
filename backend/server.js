@@ -83,6 +83,9 @@ db.exec(`
   );
 `);
 
+// Migration: remember when a token was cancelled (needed for the queue-length trend)
+try { db.exec('ALTER TABLE tokens ADD COLUMN cancelled_at DATETIME'); } catch { /* column already exists */ }
+
 // Seed default admin
 const existing = db.prepare('SELECT id FROM managers WHERE username = ?').get('admin');
 if (!existing) {
@@ -92,27 +95,43 @@ if (!existing) {
 }
 
 
-// Demo data so a fresh deployment is never empty
+// Demo data so a fresh deployment is never empty (a realistic day of history plus a live line)
 (function seedDemo() {
   const admin = db.prepare('SELECT id FROM managers WHERE username = ?').get('admin');
   if (!admin || db.prepare('SELECT COUNT(*) c FROM queues WHERE manager_id=?').get(admin.id).c > 0) return;
   const mkQ = db.prepare('INSERT INTO queues (name, description, manager_id) VALUES (?, ?, ?)');
-  const mkT = db.prepare(`INSERT INTO tokens (token_number, person_name, phone, queue_id, position, status, priority, served_at, wait_time_seconds, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?))`);
+  const mkT = db.prepare(`INSERT INTO tokens (token_number, person_name, phone, queue_id, position, status, priority, created_at, served_at, wait_time_seconds, cancelled_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', ?), ${'CASE WHEN ? IS NULL THEN NULL ELSE datetime(\'now\', ?) END'}, ?, ${'CASE WHEN ? IS NULL THEN NULL ELSE datetime(\'now\', ?) END'})`);
+  // [minutes ago it joined, name, outcome ('s' served, 'c' cancelled, 'w' waiting), minutes it waited, VIP]
   const data = [
-    ['Hospital Reception', 'Main hospital OPD queue', ['Rahul Kumar','Priya Sharma','Ankit Singh','Deepa Nair','Vikram Patel','Meera Joshi']],
-    ['Bank Counter', 'Main branch services', ['Suresh Menon','Kavita Rao','Arjun Das']],
+    ['Hospital Reception', 'Main hospital OPD queue', [
+      [240, 'Anil Kumar', 's', 12], [225, 'Sreeja Nair', 's', 18], [210, 'Mohan Das', 's', 15], [195, 'Fathima K', 's', 22],
+      [180, 'George Mathew', 's', 10], [165, 'Lakshmi P', 'c', 8], [150, 'Rafi Ahmed', 's', 20], [135, 'Divya S', 's', 14],
+      [120, 'Joseph T', 's', 19], [105, 'Anitha R', 's', 11], [90, 'Sanjay M', 's', 17], [75, 'Rahul Kumar', 's', 15],
+      [60, 'Priya Sharma', 's', 13], [40, 'Ankit Singh', 'w'], [30, 'Deepa Nair', 'w', 0, 1], [22, 'Vikram Patel', 'w'], [10, 'Meera Joshi', 'w'],
+    ]],
+    ['Bank Counter', 'Main branch services', [
+      [300, 'Haris V', 's', 11], [270, 'Neethu B', 's', 16], [240, 'Abdul Salam', 's', 14], [200, 'Remya K', 's', 19],
+      [160, 'Vineeth C', 's', 12], [120, 'Suresh Menon', 's', 18], [45, 'Kavita Rao', 'w'], [20, 'Arjun Das', 'w'],
+    ]],
     ['Service Desk', 'Vehicle registration and licence', []],
   ];
   data.forEach(([name, desc, people]) => {
     const qid = mkQ.run(name, desc, admin.id).lastInsertRowid;
-    let pos = 0;
-    people.forEach((p, i) => {
-      const served = i < Math.floor(people.length / 3);
-      const mins = 40 - i * 5;
-      const num = `${name.substring(0,2).toUpperCase()}-${String(i + 1).padStart(3,'0')}`;
-      if (served) mkT.run(num, p, '98765432' + (10 + i), qid, 0, 'served', 0, new Date().toISOString().replace('T',' ').slice(0,19), (mins - 10) * 60, `-${mins} minutes`);
-      else mkT.run(num, p, '98765432' + (10 + i), qid, ++pos, 'waiting', i === 3 ? 1 : 0, null, null, `-${mins} minutes`);
+    const prefix = name.replace(/[^A-Za-z0-9]/g, '').substring(0, 2).toUpperCase();
+    // Waiting people: VIPs first, then by arrival (same rule the app applies to new tokens)
+    const order = people.map((p, i) => ({ i, p })).filter((x) => x.p[2] === 'w')
+      .sort((x, y) => (y.p[4] || 0) - (x.p[4] || 0) || y.p[0] - x.p[0]);
+    const posOf = new Map(order.map((x, k) => [x.i, k + 1]));
+    people.forEach(([ago, person, outcome, waited = 0, vip = 0], i) => {
+      const num = `${prefix}-${String(i + 1).padStart(3, '0')}`;
+      const phone = '98765432' + String(10 + i).padStart(2, '0');
+      const created = `-${ago} minutes`;
+      const doneAt = outcome === 's' ? `-${ago - waited} minutes` : outcome === 'c' ? `-${ago - 5} minutes` : null;
+      mkT.run(num, person, phone, qid, outcome === 'w' ? posOf.get(i) : 0,
+        outcome === 's' ? 'served' : outcome === 'c' ? 'cancelled' : 'waiting', vip, created,
+        outcome === 's' ? 1 : null, outcome === 's' ? doneAt : null, outcome === 's' ? waited * 60 : null,
+        outcome === 'c' ? 1 : null, outcome === 'c' ? doneAt : null);
     });
   });
 })();
@@ -329,7 +348,7 @@ app.patch('/api/tokens/:id/cancel', auth, (req, res) => {
   const token = db.prepare(`SELECT t.* FROM tokens t JOIN queues q ON q.id=t.queue_id WHERE t.id=? AND q.manager_id=? AND t.status='waiting'`).get(req.params.id, req.manager.id);
   if (!token) return res.status(404).json({ error: 'Token not found' });
   const cancel = db.transaction(() => {
-    db.prepare(`UPDATE tokens SET status='cancelled' WHERE id=?`).run(token.id);
+    db.prepare(`UPDATE tokens SET status='cancelled', cancelled_at=CURRENT_TIMESTAMP WHERE id=?`).run(token.id);
     const remaining = db.prepare(`SELECT id FROM tokens WHERE queue_id=? AND status='waiting' ORDER BY position ASC`).all(token.queue_id);
     remaining.forEach((t, i) => db.prepare('UPDATE tokens SET position=? WHERE id=?').run(i + 1, t.id));
   });
@@ -370,7 +389,23 @@ app.get('/api/analytics', auth, (req, res) => {
     GROUP BY hour ORDER BY hour ASC
   `).all(mid);
 
-  res.json({ summary, queueStats, hourlyTrend });
+  // Queue length over the last 24 hours: how many people were waiting at the end of each hour.
+  const rows = db.prepare(`
+    SELECT t.created_at, t.served_at, t.cancelled_at
+    FROM tokens t JOIN queues q ON q.id=t.queue_id
+    WHERE q.manager_id=? AND (t.created_at >= datetime('now','-48 hours') OR t.status='waiting')
+  `).all(mid);
+  const ms = (v) => (v ? new Date(String(v).replace(' ', 'T') + 'Z').getTime() : null);
+  const spans = rows.map((r) => ({ from: ms(r.created_at), to: ms(r.served_at) ?? ms(r.cancelled_at) }));
+  const nowMs = Date.now();
+  const lengthTrend = [];
+  for (let i = 23; i >= 0; i--) {
+    const t = i === 0 ? nowMs : new Date(nowMs - i * 3600_000).setMinutes(0, 0, 0);
+    const length = spans.filter((s) => s.from <= t && (s.to === null || s.to > t)).length;
+    lengthTrend.push({ at: new Date(t).toISOString(), length });
+  }
+
+  res.json({ summary, queueStats, hourlyTrend, lengthTrend });
   } catch (err) {
     console.error('Analytics error:', err.message);
     res.status(500).json({ error: 'Analytics query failed' });

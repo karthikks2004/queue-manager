@@ -39,6 +39,9 @@ Every account only sees its own queues. The shared demo account is for looking a
 - Live updates with Server-Sent Events (SSE), no page refresh needed
 - Phone number, notes and VIP priority on each token (VIPs join ahead of regular guests)
 - Register signs the new manager in straight away
+- **Display board:** a full-screen counter display for any queue (big now-serving number, next five in line, optional bell) to put on a TV or second screen
+- Real queue-length trend for the last 24 hours, plus estimated time to go for each person once there is serving history
+- Smooth animations when people move in the line; a live demo of the queue on the login page
 - Queue history (served and cancelled tokens, with wait time)
 - Dark theme, responsive layout, live "next at the counter" board
 

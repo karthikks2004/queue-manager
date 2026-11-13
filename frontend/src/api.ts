@@ -36,6 +36,7 @@ export interface Analytics {
   summary: { totalQueues: number; totalTokens: number; served: number; waiting: number; cancelled: number; avgWaitSeconds: number }
   queueStats: { id: number; name: string; waiting: number; served: number; cancelled: number; avg_wait: number }[]
   hourlyTrend: { hour: string; tokens_added: number; served: number }[]
+  lengthTrend: { at: string; length: number }[]
 }
 
 export const auth = {
