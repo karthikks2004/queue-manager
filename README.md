@@ -1,0 +1,85 @@
+# QueueFlow — Queue Management System
+
+A full-stack queue management app built for the Rugas Technologies internship assignment. A manager can log in, create multiple queues, add people, reorder them, serve the next person with one click, cancel tokens, and watch analytics.
+
+## Features
+
+**Assignment requirements**
+- Manager register / login with JWT authentication (passwords hashed with bcrypt)
+- Create multiple queues, each with a name and description
+- Add a person to a queue; a token number is generated automatically
+- See everyone waiting with their position
+- Move a token up or down in the queue
+- Serve the top token with one button click
+- Cancel any token
+- Analytics dashboard: served / waiting / cancelled counts, average wait time, tokens per queue, last-24-hours activity
+
+**Extras**
+- Live updates with Server-Sent Events (SSE), no page refresh needed
+- Phone number, notes and priority on each token
+- Queue history (served and cancelled tokens, with wait time)
+- Dark theme, responsive layout
+
+## Tech stack
+
+| Part | Tools |
+|---|---|
+| Backend | Node.js, Express, SQLite (built-in `node:sqlite`), JWT, bcryptjs |
+| Frontend | React, Vite, TypeScript, Tailwind CSS, Recharts, lucide-react, axios |
+
+## Run it
+
+Requires **Node.js 22.5 or newer** (uses the built-in SQLite, so nothing needs compiling).
+
+```bash
+# 1. Backend
+cd backend
+npm install
+
+# 2. Frontend (build once)
+cd ../frontend
+npm install
+npm run build
+
+# 3. Start (serves API and website together)
+cd ../backend
+node server.js
+```
+
+Open http://localhost:5000 and log in with the demo account:
+
+- Username: `admin`
+- Password: `admin123`
+
+On Windows you can double-click `RUN-WEBSITE.bat` to do all of the above.
+
+For frontend development, run `npm run dev` in `frontend` (port 5173, proxies `/api` to port 5000).
+
+**Configuration:** set `JWT_SECRET` and `PORT` as environment variables. Change the default demo password before any real use.
+
+## API overview
+
+All routes except register and login need `Authorization: Bearer <token>`.
+
+| Method | Route | Purpose |
+|---|---|---|
+| POST | `/api/register`, `/api/login` | Create account, get JWT |
+| GET / POST | `/api/queues` | List / create queues |
+| PUT / DELETE | `/api/queues/:id` | Rename / delete a queue |
+| GET / POST | `/api/queues/:id/tokens` | List waiting tokens / add a token |
+| GET | `/api/queues/:id/tokens/history` | Served and cancelled tokens |
+| PATCH | `/api/tokens/:id/move-up`, `/move-down` | Reorder |
+| PATCH | `/api/tokens/:id/serve`, `/cancel` | Serve or cancel |
+| GET | `/api/analytics` | Dashboard numbers |
+| GET | `/api/events?token=` | SSE stream for live updates |
+
+## Project structure
+
+```
+backend/    Express server, SQLite database (created on first run)
+frontend/   React app (pages: Login, Dashboard, QueueDetail, Analytics)
+```
+
+## Author
+
+Karthik K S — github.com/karthikks2004
