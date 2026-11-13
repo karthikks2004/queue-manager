@@ -255,6 +255,7 @@ app.patch('/api/tokens/:id/cancel', auth, (req, res) => {
 
 // ── Analytics ─────────────────────────────────────────────
 app.get('/api/analytics', auth, (req, res) => {
+  try {
   const mid = req.manager.id;
   const summary = {
     totalQueues: db.prepare('SELECT COUNT(*) as c FROM queues WHERE manager_id=?').get(mid).c,
@@ -285,6 +286,10 @@ app.get('/api/analytics', auth, (req, res) => {
   `).all(mid);
 
   res.json({ summary, queueStats, hourlyTrend });
+  } catch (err) {
+    console.error('Analytics error:', err.message);
+    res.status(500).json({ error: 'Analytics query failed' });
+  }
 });
 
 app.listen(PORT, () => console.log(`QueueFlow backend running on http://localhost:${PORT}`));
