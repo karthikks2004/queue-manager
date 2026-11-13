@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const Database = require('better-sqlite3');
+const { DatabaseSync } = require('node:sqlite');
 const path = require('path');
 
 const app = express();
@@ -13,9 +13,14 @@ app.use(cors());
 app.use(express.json());
 
 // DB setup — WAL mode for better concurrent reads
-const db = new Database(path.join(__dirname, 'queue.db'));
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+// Built-in node:sqlite (no native compile needed); small shim keeps the better-sqlite3-style API
+const db = new DatabaseSync(path.join(__dirname, 'queue.db'));
+db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+db.transaction = (fn) => () => {
+  db.exec('BEGIN');
+  try { const r = fn(); db.exec('COMMIT'); return r; }
+  catch (e) { db.exec('ROLLBACK'); throw e; }
+};
 
 // Schema
 db.exec(`
@@ -229,7 +234,7 @@ app.patch('/api/tokens/:id/move-down', auth, (req, res) => {
 app.patch('/api/tokens/:id/serve', auth, (req, res) => {
   const token = db.prepare(`SELECT t.* FROM tokens t JOIN queues q ON q.id=t.queue_id WHERE t.id=? AND q.manager_id=? AND t.status='waiting'`).get(req.params.id, req.manager.id);
   if (!token) return res.status(404).json({ error: 'Token not found' });
-  const waitSeconds = Math.round((Date.now() - new Date(token.created_at).getTime()) / 1000);
+  const waitSeconds = Math.round((Date.now() - new Date(token.created_at.replace(' ','T')+'Z').getTime()) / 1000);
   const serve = db.transaction(() => {
     db.prepare(`UPDATE tokens SET status='served', served_at=CURRENT_TIMESTAMP, wait_time_seconds=? WHERE id=?`).run(waitSeconds, token.id);
     const remaining = db.prepare(`SELECT id FROM tokens WHERE queue_id=? AND status='waiting' ORDER BY position ASC`).all(token.queue_id);
