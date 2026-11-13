@@ -4,6 +4,25 @@
 
 A full-stack queue management app built for the Rugas Technologies internship assignment. A manager can log in, create multiple queues, add people, reorder them, serve the next person with one click, cancel tokens, and watch analytics.
 
+## Try it in 30 seconds
+
+Open the live demo: https://queueflow-uujl.onrender.com
+
+The free host sleeps when idle, so the first load can take up to a minute. After that it is fast.
+
+You have two ways in:
+
+1. **Use it without signing up.** Click **Try the demo account** on the login page. You are signed in at once with sample queues, so you can look around straight away.
+2. **Create your own account.** Click **Register**, choose a username (letters, numbers, dot, dash or underscore, at least 3 characters) and a password (at least 6 characters), then press **Create account**. You are signed in automatically and start with an empty workspace.
+
+Then:
+
+- Press **New queue**, give it a name and add people with **Add person**. Mark someone as VIP to move them ahead of regular guests.
+- Use the arrows to move a person up or down, the tick to serve, and the cross to cancel.
+- Open **Analytics** to see counts, average wait and the last 24 hours.
+
+Every account only sees its own queues. The shared demo account is for looking around, so use your own account for real work.
+
 ## Features
 
 **Assignment requirements**
