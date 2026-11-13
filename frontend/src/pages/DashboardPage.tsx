@@ -1,25 +1,44 @@
 import { useState, useEffect, useCallback } from 'react'
-import { queues as queuesApi, tokens as tokensApi, analytics as analyticsApi } from '../api'
-import type { Queue, Token, Analytics } from '../api'
-import { 
-  Layers, LogOut, Plus, BarChart3, Users, CheckCircle, XCircle, 
-  Clock, ChevronRight, RefreshCw, Trash2, Edit2, X, ArrowUpDown
-} from 'lucide-react'
+import { queues as queuesApi, analytics as analyticsApi } from '../api'
+import type { Queue, Analytics } from '../api'
+import { LogOut, Plus, Trash2, ArrowUpRight, Ticket } from 'lucide-react'
 import QueueDetail from './QueueDetail'
 import AnalyticsDashboard from './AnalyticsDashboard'
+import { TopBar, Wordmark, Modal, ConfirmDialog, Notch, LiveDot, Footer, toast } from '../ui'
+import { errorMessage, formatDuration } from '../lib'
 
 interface Props { username: string; token: string; onLogout: () => void }
+
+function greeting() {
+  const h = new Date().getHours()
+  return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'
+}
+
+function Dots({ waiting }: { waiting: number }) {
+  if (waiting === 0) return <p className="h-3 text-xs text-muted">Nobody waiting</p>
+  const shown = Math.min(waiting, 14)
+  return (
+    <div className="flex h-3 items-center gap-1.5" aria-label={`${waiting} waiting`}>
+      {Array.from({ length: shown }).map((_, i) => (
+        <span key={i} className={`h-2.5 w-2.5 rounded-full ${i === 0 ? 'bg-amber ring-4 ring-amber/20' : 'bg-amber/45'}`} />
+      ))}
+      {waiting > shown && <span className="ml-1 font-mono text-xs text-muted">+{waiting - shown}</span>}
+    </div>
+  )
+}
 
 export default function DashboardPage({ username, token, onLogout }: Props) {
   const [queues, setQueues] = useState<Queue[]>([])
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
   const [view, setView] = useState<'queues' | 'analytics'>('queues')
   const [selectedQueue, setSelectedQueue] = useState<Queue | null>(null)
-  const [showCreateModal, setShowCreateModal] = useState(false)
-  const [newQueueName, setNewQueueName] = useState('')
-  const [newQueueDesc, setNewQueueDesc] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [showCreate, setShowCreate] = useState(false)
+  const [name, setName] = useState('')
+  const [desc, setDesc] = useState('')
   const [creating, setCreating] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [toDelete, setToDelete] = useState<Queue | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const loadData = useCallback(async () => {
     try {
@@ -32,208 +51,244 @@ export default function DashboardPage({ username, token, onLogout }: Props) {
 
   useEffect(() => {
     loadData()
-    // SSE
-    const es = new EventSource(`/api/events?token=${token}`)
-    es.onmessage = (e) => {
-      const data = JSON.parse(e.data)
-      if (data.type !== 'connected') loadData()
-    }
-    return () => es.close()
+    let es: EventSource | null = null
+    try {
+      es = new EventSource(`/api/events?token=${encodeURIComponent(token)}`)
+      es.onmessage = (e) => {
+        try { if (JSON.parse(e.data).type !== 'connected') loadData() } catch {}
+      }
+      ;['queue_created', 'queue_updated', 'queue_deleted', 'token_added', 'queue_changed', 'token_served', 'token_cancelled']
+        .forEach((ev) => es!.addEventListener(ev, () => loadData()))
+    } catch {}
+    return () => es?.close()
   }, [token, loadData])
 
   const createQueue = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newQueueName.trim()) return
+    if (!name.trim()) return
     setCreating(true)
     try {
-      const { data } = await queuesApi.create(newQueueName, newQueueDesc)
-      setQueues(prev => [{ ...data, waiting_count: 0, served_count: 0, cancelled_count: 0 }, ...prev])
-      setNewQueueName('')
-      setNewQueueDesc('')
-      setShowCreateModal(false)
-      loadData()
-    } catch {}
+      await queuesApi.create(name.trim(), desc.trim())
+      setName(''); setDesc(''); setShowCreate(false)
+      toast('Queue created')
+      await loadData()
+    } catch (err) {
+      toast(errorMessage(err), 'err')
+    }
     setCreating(false)
   }
 
-  const deleteQueue = async (id: number, e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!confirm('Delete this queue and all its tokens?')) return
-    await queuesApi.delete(id)
-    setQueues(prev => prev.filter(q => q.id !== id))
-    loadData()
+  const confirmDelete = async () => {
+    if (!toDelete) return
+    setDeleting(true)
+    try {
+      await queuesApi.delete(toDelete.id)
+      setQueues((prev) => prev.filter((q) => q.id !== toDelete.id))
+      toast(`Deleted “${toDelete.name}”`)
+      setToDelete(null)
+      loadData()
+    } catch (err) {
+      toast(errorMessage(err), 'err')
+    }
+    setDeleting(false)
   }
 
   if (selectedQueue) {
-    return <QueueDetail
-      queue={selectedQueue}
-      onBack={() => { setSelectedQueue(null); loadData() }}
-      onQueueUpdate={(q) => setSelectedQueue(q)}
-    />
+    return (
+      <QueueDetail
+        queue={selectedQueue}
+        token={token}
+        onBack={() => { setSelectedQueue(null); loadData() }}
+      />
+    )
   }
 
+  const s = analytics?.summary
+  const stats = [
+    { label: 'Queues', value: s ? s.totalQueues : '–', tone: 'text-ink' },
+    { label: 'Waiting now', value: s ? s.waiting : '–', tone: 'text-amber' },
+    { label: 'Served', value: s ? s.served : '–', tone: 'text-mint' },
+    { label: 'Average wait', value: s ? (s.avgWaitSeconds > 0 ? formatDuration(s.avgWaitSeconds) : '—') : '–', tone: 'text-ink' },
+  ]
+
   return (
-    <div className="min-h-screen bg-bg">
-      {/* Header */}
-      <header className="bg-surface border-b border-border sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-accent/20 border border-accent/30 flex items-center justify-center">
-              <Layers className="w-4 h-4 text-accent" />
-            </div>
-            <span className="font-bold text-white text-lg">QueueFlow</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="hidden sm:flex gap-1 bg-bg rounded-xl p-1">
-              {(['queues', 'analytics'] as const).map(v => (
-                <button key={v} onClick={() => setView(v)}
-                  className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${view === v ? 'bg-accent text-white' : 'text-muted hover:text-white'}`}>
+    <div className="flex min-h-screen flex-col">
+      <TopBar
+        wide
+        left={<Wordmark />}
+        right={
+          <>
+            <nav className="mr-2 hidden gap-6 sm:flex" role="tablist">
+              {(['queues', 'analytics'] as const).map((v) => (
+                <button key={v} role="tab" aria-selected={view === v} onClick={() => setView(v)} className="tab !pb-[1.15rem] !pt-[1.15rem]">
                   {v === 'queues' ? 'Queues' : 'Analytics'}
                 </button>
               ))}
+            </nav>
+            <div className="flex items-center gap-2 rounded-full border border-line bg-surface py-1 pl-1 pr-3">
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-amber text-sm font-bold text-bg">
+                {(username || '?').charAt(0).toUpperCase()}
+              </span>
+              <span className="hidden max-w-[110px] truncate text-sm sm:block">{username}</span>
             </div>
-            <span className="text-muted text-sm hidden sm:block">{username}</span>
-            <button onClick={onLogout} className="p-2 text-muted hover:text-white rounded-lg transition-colors">
-              <LogOut className="w-4 h-4" />
+            <button onClick={onLogout} className="icon-btn" aria-label="Sign out" title="Sign out">
+              <LogOut className="h-4 w-4" />
             </button>
-          </div>
-        </div>
-      </header>
+          </>
+        }
+      />
 
-      <main className="max-w-6xl mx-auto px-4 py-6">
-        {/* Mobile nav */}
-        <div className="sm:hidden flex gap-1 bg-surface rounded-xl p-1 mb-6">
-          {(['queues', 'analytics'] as const).map(v => (
-            <button key={v} onClick={() => setView(v)}
-              className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${view === v ? 'bg-accent text-white' : 'text-muted hover:text-white'}`}>
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6">
+        <nav className="mb-6 flex gap-6 border-b border-line sm:hidden" role="tablist">
+          {(['queues', 'analytics'] as const).map((v) => (
+            <button key={v} role="tab" aria-selected={view === v} onClick={() => setView(v)} className="tab">
               {v === 'queues' ? 'Queues' : 'Analytics'}
             </button>
           ))}
-        </div>
+        </nav>
 
         {view === 'analytics' ? (
-          <AnalyticsDashboard onBack={() => {}} />
+          <AnalyticsDashboard />
         ) : (
           <>
-            {/* Stats row */}
-            {analytics && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-                {[
-                  { label: 'Active Queues', value: analytics.summary.total_queues, icon: Layers, color: 'accent' },
-                  { label: 'Waiting', value: analytics.summary.waiting, icon: Users, color: 'warning' },
-                  { label: 'Served Today', value: analytics.summary.served, icon: CheckCircle, color: 'success' },
-                  { label: 'Avg Wait', value: analytics.summary.avg_wait_seconds > 0 ? `${Math.round(analytics.summary.avg_wait_seconds / 60)}m` : '—', icon: Clock, color: 'accent' },
-                ].map(stat => (
-                  <div key={stat.label} className="bg-surface border border-border rounded-xl p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs text-muted">{stat.label}</span>
-                      <stat.icon className={`w-4 h-4 text-${stat.color}`} />
-                    </div>
-                    <p className="text-2xl font-bold text-white">{stat.value}</p>
-                  </div>
-                ))}
+            <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+                  {greeting()}, <span className="text-amber">{username}</span>
+                </h1>
+                <div className="mt-2"><LiveDot label="Live — updates the moment someone joins or is served" /></div>
               </div>
-            )}
-
-            {/* Queues header */}
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-white">Your Queues</h2>
-              <div className="flex gap-2">
-                <button onClick={loadData} className="p-2 text-muted hover:text-white rounded-lg transition-colors">
-                  <RefreshCw className="w-4 h-4" />
-                </button>
-                <button onClick={() => setShowCreateModal(true)}
-                  className="flex items-center gap-2 bg-accent hover:bg-accentHover text-white text-sm font-medium px-4 py-2 rounded-xl transition-colors">
-                  <Plus className="w-4 h-4" /> New Queue
-                </button>
-              </div>
+              <button onClick={() => setShowCreate(true)} className="btn btn-amber">
+                <Plus className="h-4 w-4" /> New queue
+              </button>
             </div>
 
-            {/* Queue list */}
+            {/* Stats */}
+            <div className="panel mb-10 grid grid-cols-2 divide-line sm:grid-cols-4 sm:divide-x">
+              {stats.map((st, i) => (
+                <div key={st.label} className={`px-6 py-5 ${i % 2 === 1 ? 'border-l border-line sm:border-l-0' : ''} ${i > 1 ? 'border-t border-line sm:border-t-0' : ''}`}>
+                  <p className="text-sm text-muted">{st.label}</p>
+                  <p className={`tabular mt-1 text-4xl font-semibold tracking-tight ${st.tone}`}>{st.value}</p>
+                </div>
+              ))}
+            </div>
+
+            <h2 className="mb-4 text-lg font-semibold">Your queues</h2>
+
             {loading ? (
-              <div className="text-center py-16 text-muted">Loading queues...</div>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {[0, 1, 2].map((i) => <div key={i} className="panel h-52 animate-pulse-soft" />)}
+              </div>
             ) : queues.length === 0 ? (
-              <div className="text-center py-16 bg-surface border border-border rounded-2xl">
-                <Layers className="w-12 h-12 text-muted mx-auto mb-4" />
-                <p className="text-white font-medium">No queues yet</p>
-                <p className="text-muted text-sm mt-1">Create your first queue to get started</p>
-                <button onClick={() => setShowCreateModal(true)}
-                  className="mt-4 bg-accent hover:bg-accentHover text-white px-6 py-2 rounded-xl text-sm font-medium transition-colors">
-                  Create Queue
+              <div className="panel flex flex-col items-center px-6 py-16 text-center">
+                <span className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-amber/10 text-amber">
+                  <Ticket className="h-7 w-7" />
+                </span>
+                <p className="text-lg font-semibold">Start your first line</p>
+                <p className="mt-1 max-w-sm text-sm text-muted">
+                  Create a queue for a counter, a desk or a clinic, then add people as they arrive.
+                </p>
+                <button onClick={() => setShowCreate(true)} className="btn btn-amber mt-6">
+                  <Plus className="h-4 w-4" /> Create a queue
                 </button>
               </div>
             ) : (
-              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {queues.map(queue => (
-                  <div key={queue.id} onClick={() => setSelectedQueue(queue)}
-                    className="bg-surface border border-border hover:border-accent/50 rounded-2xl p-5 cursor-pointer transition-all hover:shadow-lg hover:shadow-accent/5 group animate-slide-in">
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="w-10 h-10 rounded-xl bg-accent/20 border border-accent/30 flex items-center justify-center shrink-0">
-                        <ArrowUpDown className="w-5 h-5 text-accent" />
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                {queues.map((q, idx) => {
+                  const total = q.waiting_count + q.served_count
+                  const pct = total ? Math.round((q.served_count / total) * 100) : 0
+                  return (
+                    <div
+                      key={q.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedQueue(q)}
+                      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setSelectedQueue(q)}
+                      style={{ animationDelay: `${idx * 60}ms` }}
+                      className="animate-slide-in group relative cursor-pointer overflow-hidden rounded-2xl border border-line bg-surface transition hover:-translate-y-0.5 hover:border-amber/50 hover:shadow-xl hover:shadow-black/40"
+                    >
+                      <div className="p-5 pb-6">
+                        <div className="flex items-start justify-between gap-3">
+                          <h3 className="text-xl font-semibold leading-tight">{q.name}</h3>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setToDelete(q) }}
+                            className="icon-btn -mr-2 -mt-1 opacity-0 transition focus:opacity-100 group-hover:opacity-100 hover:!text-coral"
+                            aria-label={`Delete ${q.name}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                        <p className="mt-1 line-clamp-1 min-h-[1.25rem] text-sm text-muted">{q.description}</p>
                       </div>
-                      <button onClick={(e) => deleteQueue(queue.id, e)}
-                        className="opacity-0 group-hover:opacity-100 p-1.5 text-muted hover:text-danger rounded-lg transition-all">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+
+                      {/* perforation */}
+                      <div className="relative h-0 border-t border-dashed border-line">
+                        <Notch className="-left-2 -top-2" />
+                        <Notch className="-right-2 -top-2" />
+                      </div>
+
+                      <div className="p-5 pt-6">
+                        <Dots waiting={q.waiting_count} />
+                        <div className="mt-5 flex items-end justify-between">
+                          <div>
+                            <p className="tabular text-3xl font-semibold leading-none text-amber">{q.waiting_count}</p>
+                            <p className="mt-1 text-xs text-muted">waiting</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="tabular text-3xl font-semibold leading-none text-mint">{q.served_count}</p>
+                            <p className="mt-1 text-xs text-muted">served</p>
+                          </div>
+                        </div>
+                        <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-bg">
+                          <div className="h-full rounded-full bg-mint transition-all" style={{ width: `${pct}%` }} />
+                        </div>
+                        <p className="mt-4 flex items-center gap-1 text-sm font-medium text-muted transition group-hover:text-amber">
+                          Open queue <ArrowUpRight className="h-4 w-4" />
+                        </p>
+                      </div>
                     </div>
-                    <h3 className="font-semibold text-white mb-1">{queue.name}</h3>
-                    {queue.description && <p className="text-muted text-xs mb-3 line-clamp-1">{queue.description}</p>}
-                    <div className="flex items-center gap-3 mt-3">
-                      <span className="flex items-center gap-1 text-xs">
-                        <span className="w-2 h-2 rounded-full bg-warning animate-pulse-soft"></span>
-                        <span className="text-warning font-medium">{queue.waiting_count}</span>
-                        <span className="text-muted">waiting</span>
-                      </span>
-                      <span className="flex items-center gap-1 text-xs text-success">
-                        <CheckCircle className="w-3 h-3" />
-                        {queue.served_count} served
-                      </span>
-                      <ChevronRight className="w-4 h-4 text-muted ml-auto group-hover:text-accent transition-colors" />
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </>
         )}
       </main>
 
-      {/* Create Queue Modal */}
-      {showCreateModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-surface border border-border rounded-2xl p-6 w-full max-w-md shadow-2xl animate-slide-in">
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="font-semibold text-white text-lg">Create New Queue</h3>
-              <button onClick={() => setShowCreateModal(false)} className="text-muted hover:text-white">
-                <X className="w-5 h-5" />
+      <Footer />
+
+      {showCreate && (
+        <Modal title="New queue" onClose={() => setShowCreate(false)}>
+          <form onSubmit={createQueue} className="space-y-4">
+            <div>
+              <label htmlFor="qname" className="mb-1.5 block text-sm text-muted">Name</label>
+              <input id="qname" className="input" value={name} onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Customer support" required autoFocus maxLength={60} />
+            </div>
+            <div>
+              <label htmlFor="qdesc" className="mb-1.5 block text-sm text-muted">Description <span className="text-muted/60">(optional)</span></label>
+              <input id="qdesc" className="input" value={desc} onChange={(e) => setDesc(e.target.value)}
+                placeholder="Where or what is this line for?" maxLength={120} />
+            </div>
+            <div className="flex gap-3 pt-1">
+              <button type="button" className="btn btn-ghost flex-1" onClick={() => setShowCreate(false)}>Cancel</button>
+              <button type="submit" className="btn btn-amber flex-1" disabled={creating}>
+                {creating ? 'Creating…' : 'Create queue'}
               </button>
             </div>
-            <form onSubmit={createQueue} className="space-y-4">
-              <div>
-                <label className="block text-sm text-muted mb-1.5">Queue Name *</label>
-                <input value={newQueueName} onChange={e => setNewQueueName(e.target.value)}
-                  className="w-full bg-bg border border-border rounded-xl px-4 py-2.5 text-white placeholder-muted/50 focus:outline-none focus:border-accent transition-colors"
-                  placeholder="e.g. Customer Support" required autoFocus />
-              </div>
-              <div>
-                <label className="block text-sm text-muted mb-1.5">Description (optional)</label>
-                <input value={newQueueDesc} onChange={e => setNewQueueDesc(e.target.value)}
-                  className="w-full bg-bg border border-border rounded-xl px-4 py-2.5 text-white placeholder-muted/50 focus:outline-none focus:border-accent transition-colors"
-                  placeholder="Brief description" />
-              </div>
-              <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => setShowCreateModal(false)}
-                  className="flex-1 border border-border text-muted hover:text-white rounded-xl py-2.5 text-sm transition-colors">
-                  Cancel
-                </button>
-                <button type="submit" disabled={creating}
-                  className="flex-1 bg-accent hover:bg-accentHover disabled:opacity-50 text-white rounded-xl py-2.5 text-sm font-medium transition-colors">
-                  {creating ? 'Creating...' : 'Create Queue'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+          </form>
+        </Modal>
+      )}
+
+      {toDelete && (
+        <ConfirmDialog
+          title="Delete this queue?"
+          body={`“${toDelete.name}” and everyone in it, including its history, will be removed. This cannot be undone.`}
+          confirmLabel="Delete queue"
+          busy={deleting}
+          onConfirm={confirmDelete}
+          onClose={() => setToDelete(null)}
+        />
       )}
     </div>
   )

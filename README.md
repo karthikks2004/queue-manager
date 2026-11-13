@@ -18,9 +18,14 @@ A full-stack queue management app built for the Rugas Technologies internship as
 
 **Extras**
 - Live updates with Server-Sent Events (SSE), no page refresh needed
-- Phone number, notes and priority on each token
+- Phone number, notes and VIP priority on each token (VIPs join ahead of regular guests)
+- Register signs the new manager in straight away
 - Queue history (served and cancelled tokens, with wait time)
-- Dark theme, responsive layout
+- Dark theme, responsive layout, live "next at the counter" board
+
+**Security**
+- Passwords hashed with bcrypt, JWT sessions, every queue and token checked against its owner
+- Server-side validation and length limits, login/register rate limiting, security headers
 
 ## Tech stack
 

@@ -2,30 +2,14 @@ import { useState, useEffect, useCallback } from 'react'
 import { tokens as tokensApi } from '../api'
 import type { Queue, Token } from '../api'
 import {
-  ArrowLeft, Plus, ChevronUp, ChevronDown, CheckCircle, XCircle,
-  Crown, Phone, Clock, User, Hash, X, History, Users, AlertCircle
+  ArrowLeft, Plus, ChevronUp, ChevronDown, Check, X, Crown, Phone, Clock, Users, History, Megaphone,
 } from 'lucide-react'
+import { TopBar, Modal, Notch, LiveDot, Footer, toast } from '../ui'
+import { timeAgo, formatDuration, errorMessage } from '../lib'
 
-interface Props {
-  queue: Queue
-  onBack: () => void
-  onQueueUpdate: (q: Queue) => void
-}
+interface Props { queue: Queue; token: string; onBack: () => void }
 
-function formatWait(secs: number) {
-  if (secs < 60) return `${secs}s`
-  if (secs < 3600) return `${Math.round(secs / 60)}m`
-  return `${Math.round(secs / 3600)}h ${Math.round((secs % 3600) / 60)}m`
-}
-
-function timeAgo(dateStr: string) {
-  const diff = Date.now() - new Date(dateStr).getTime()
-  if (diff < 60000) return 'just now'
-  if (diff < 3600000) return `${Math.round(diff / 60000)}m ago`
-  return `${Math.round(diff / 3600000)}h ago`
-}
-
-export default function QueueDetail({ queue, onBack }: Props) {
+export default function QueueDetail({ queue, token, onBack }: Props) {
   const [waiting, setWaiting] = useState<Token[]>([])
   const [history, setHistory] = useState<Token[]>([])
   const [tab, setTab] = useState<'queue' | 'history'>('queue')
@@ -33,255 +17,266 @@ export default function QueueDetail({ queue, onBack }: Props) {
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState({ person_name: '', phone: '', priority: false, notes: '' })
   const [adding, setAdding] = useState(false)
-  const [actionLoading, setActionLoading] = useState<number | null>(null)
+  const [busy, setBusy] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     try {
-      const [wRes, hRes] = await Promise.all([
-        tokensApi.list(queue.id),
-        tokensApi.history(queue.id)
-      ])
-      setWaiting(wRes.data)
-      setHistory(hRes.data)
+      const [w, h] = await Promise.all([tokensApi.list(queue.id), tokensApi.history(queue.id)])
+      setWaiting(w.data)
+      setHistory(h.data)
     } catch {}
     setLoading(false)
   }, [queue.id])
 
   useEffect(() => { load() }, [load])
 
+  useEffect(() => {
+    const prev = document.title
+    document.title = `${queue.name} · QueueFlow`
+    return () => { document.title = prev }
+  }, [queue.name])
+
+  // Live updates: refresh when anything changes on the server.
+  useEffect(() => {
+    let es: EventSource | null = null
+    try {
+      es = new EventSource(`/api/events?token=${encodeURIComponent(token)}`)
+      const refresh = () => load()
+      ;['token_added', 'queue_changed', 'token_served', 'token_cancelled'].forEach((ev) => es!.addEventListener(ev, refresh))
+    } catch {}
+    return () => es?.close()
+  }, [token, load])
+
   const addToken = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!form.person_name.trim()) return
     setAdding(true)
     try {
-      await tokensApi.add(queue.id, { ...form, priority: form.priority ? 1 : 0 })
+      await tokensApi.add(queue.id, { ...form, person_name: form.person_name.trim(), priority: form.priority ? 1 : 0 })
+      toast(`${form.person_name.trim()} added to the queue`)
       setForm({ person_name: '', phone: '', priority: false, notes: '' })
       setShowAdd(false)
-      load()
-    } catch {}
+      await load()
+    } catch (err) {
+      toast(errorMessage(err), 'err')
+    }
     setAdding(false)
   }
 
-  const action = async (fn: () => Promise<any>, tokenId: number) => {
-    setActionLoading(tokenId)
-    try { await fn(); await load() } catch {}
-    setActionLoading(null)
+  const run = async (fn: () => Promise<any>, id: number, okMsg?: string) => {
+    setBusy(id)
+    try {
+      await fn()
+      if (okMsg) toast(okMsg)
+      await load()
+    } catch (err) {
+      toast(errorMessage(err), 'err')
+    }
+    setBusy(null)
   }
 
-  const topToken = waiting[0]
+  const top = waiting[0]
+  const served = history.filter((t) => t.status === 'served').length
+  const cancelled = history.filter((t) => t.status === 'cancelled').length
 
   return (
-    <div className="min-h-screen bg-bg">
-      {/* Header */}
-      <header className="bg-surface border-b border-border sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button onClick={onBack} className="p-2 text-muted hover:text-white rounded-lg transition-colors">
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <div>
-              <h1 className="font-bold text-white">{queue.name}</h1>
-              {queue.description && <p className="text-xs text-muted">{queue.description}</p>}
+    <div className="flex min-h-screen flex-col">
+      <TopBar
+        left={
+          <>
+            <button onClick={onBack} className="icon-btn -ml-2" aria-label="Back to queues"><ArrowLeft className="h-5 w-5" /></button>
+            <div className="min-w-0">
+              <h1 className="truncate text-lg font-semibold leading-tight">{queue.name}</h1>
+              {queue.description && <p className="truncate text-xs text-muted">{queue.description}</p>}
             </div>
-          </div>
-          <button onClick={() => setShowAdd(true)}
-            className="flex items-center gap-2 bg-accent hover:bg-accentHover text-white text-sm font-medium px-4 py-2 rounded-xl transition-colors">
-            <Plus className="w-4 h-4" /> Add Token
+          </>
+        }
+        right={
+          <button onClick={() => setShowAdd(true)} className="btn btn-amber">
+            <Plus className="h-4 w-4" /> <span className="hidden sm:inline">Add person</span><span className="sm:hidden">Add</span>
           </button>
-        </div>
-      </header>
+        }
+      />
 
-      <main className="max-w-4xl mx-auto px-4 py-6">
-        {/* Stats */}
-        <div className="grid grid-cols-3 gap-3 mb-6">
-          {[
-            { label: 'Waiting', value: waiting.length, color: 'warning' },
-            { label: 'Served', value: queue.served_count, color: 'success' },
-            { label: 'Cancelled', value: queue.cancelled_count, color: 'danger' },
-          ].map(s => (
-            <div key={s.label} className="bg-surface border border-border rounded-xl p-3 text-center">
-              <p className={`text-2xl font-bold text-${s.color}`}>{s.value}</p>
-              <p className="text-xs text-muted">{s.label}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* Next up card */}
-        {topToken && (
-          <div className="bg-gradient-to-r from-accent/20 to-accent/5 border border-accent/30 rounded-2xl p-4 mb-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-accent font-medium mb-1">🎯 Next to Serve</p>
-                <p className="text-xl font-bold text-white">{topToken.person_name}</p>
-                <p className="text-sm text-muted font-mono">{topToken.token_number}</p>
-                <p className="text-xs text-muted mt-1 flex items-center gap-1">
-                  <Clock className="w-3 h-3" /> Waiting {timeAgo(topToken.created_at)}
-                </p>
+      <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-8 sm:px-6">
+        {/* Now-serving board */}
+        <section className="panel relative overflow-hidden p-5 sm:p-7" aria-label="Next in line">
+          <div className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-amber/10 blur-3xl" />
+          <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="mb-2 flex items-center gap-2 text-sm text-muted"><Megaphone className="h-4 w-4 text-amber" /> Next at the counter</p>
+              <div className="rounded-xl border border-line bg-[#07090c] px-5 py-4">
+                {top ? (
+                  <p key={top.id} className="led animate-tick break-all text-4xl font-bold leading-none sm:text-6xl">{top.token_number}</p>
+                ) : (
+                  <p className="led text-4xl font-bold leading-none opacity-40 sm:text-6xl">– – –</p>
+                )}
               </div>
-              <button
-                onClick={() => action(() => tokensApi.serve(topToken.id), topToken.id)}
-                disabled={actionLoading === topToken.id}
-                className="flex items-center gap-2 bg-success hover:bg-success/80 disabled:opacity-50 text-white font-semibold px-5 py-2.5 rounded-xl transition-colors text-sm">
-                <CheckCircle className="w-4 h-4" />
-                {actionLoading === topToken.id ? 'Serving...' : 'Serve Now'}
-              </button>
+              <div className="mt-3 min-h-[2.5rem]">
+                {top ? (
+                  <>
+                    <p className="truncate text-xl font-semibold">{top.person_name}
+                      {top.priority === 1 && <Crown className="ml-2 inline h-4 w-4 -translate-y-px text-amber" aria-label="VIP" />}
+                    </p>
+                    <p className="flex items-center gap-1.5 text-sm text-muted"><Clock className="h-3.5 w-3.5" /> Waiting {timeAgo(top.created_at).replace(' ago', '')}</p>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted">The line is clear. Add someone to get started.</p>
+                )}
+              </div>
             </div>
+            <button
+              onClick={() => top && run(() => tokensApi.serve(top.id), top.id, `${top.person_name} served`)}
+              disabled={!top || busy === top?.id}
+              className="btn btn-mint w-full shrink-0 px-8 py-4 text-base sm:w-auto"
+            >
+              <Check className="h-5 w-5" /> {top && busy === top.id ? 'Serving…' : 'Serve next'}
+            </button>
           </div>
-        )}
+
+          <dl className="relative mt-6 flex gap-8 border-t border-dashed border-line pt-4 text-sm">
+            {[
+              { k: 'Waiting', v: waiting.length, c: 'text-amber' },
+              { k: 'Served', v: served, c: 'text-mint' },
+              { k: 'Cancelled', v: cancelled, c: 'text-coral' },
+            ].map((x) => (
+              <div key={x.k} className="flex items-baseline gap-2">
+                <dd className={`tabular text-2xl font-semibold ${x.c}`}>{x.v}</dd>
+                <dt className="text-muted">{x.k}</dt>
+              </div>
+            ))}
+            <div className="ml-auto hidden self-center sm:block"><LiveDot /></div>
+          </dl>
+        </section>
 
         {/* Tabs */}
-        <div className="flex gap-1 bg-surface rounded-xl p-1 mb-4 w-fit">
-          <button onClick={() => setTab('queue')}
-            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${tab === 'queue' ? 'bg-accent text-white' : 'text-muted hover:text-white'}`}>
-            <Users className="w-3.5 h-3.5" /> Queue {waiting.length > 0 && `(${waiting.length})`}
+        <div className="mb-5 mt-8 flex gap-6 border-b border-line" role="tablist">
+          <button role="tab" aria-selected={tab === 'queue'} className="tab" onClick={() => setTab('queue')}>
+            <span className="inline-flex items-center gap-2"><Users className="h-4 w-4" /> In line ({waiting.length})</span>
           </button>
-          <button onClick={() => setTab('history')}
-            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${tab === 'history' ? 'bg-accent text-white' : 'text-muted hover:text-white'}`}>
-            <History className="w-3.5 h-3.5" /> History
+          <button role="tab" aria-selected={tab === 'history'} className="tab" onClick={() => setTab('history')}>
+            <span className="inline-flex items-center gap-2"><History className="h-4 w-4" /> History</span>
           </button>
         </div>
 
         {tab === 'queue' ? (
           loading ? (
-            <div className="text-center py-12 text-muted">Loading...</div>
+            <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="panel h-20 animate-pulse-soft" />)}</div>
           ) : waiting.length === 0 ? (
-            <div className="text-center py-16 bg-surface border border-border rounded-2xl">
-              <Users className="w-10 h-10 text-muted mx-auto mb-3" />
-              <p className="text-white font-medium">Queue is empty</p>
-              <p className="text-muted text-sm">Add a person to get started</p>
+            <div className="panel px-6 py-14 text-center">
+              <p className="text-lg font-semibold">Nobody is waiting</p>
+              <p className="mt-1 text-sm text-muted">Use “Add person” to put the first one in line.</p>
             </div>
           ) : (
-            <div className="space-y-2">
-              {waiting.map((token, idx) => (
-                <div key={token.id}
-                  className={`bg-surface border rounded-xl p-4 transition-all animate-slide-in ${idx === 0 ? 'border-accent/40 shadow shadow-accent/10' : 'border-border hover:border-border/80'}`}>
-                  <div className="flex items-center gap-3">
-                    {/* Position badge */}
-                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 font-bold text-sm ${idx === 0 ? 'bg-accent text-white' : 'bg-bg text-muted'}`}>
-                      {token.position}
+            <ul className="space-y-3">
+              {waiting.map((t, idx) => {
+                const first = idx === 0
+                return (
+                  <li
+                    key={t.id}
+                    style={{ animationDelay: `${Math.min(idx, 8) * 40}ms` }}
+                    className={`animate-slide-in relative flex items-stretch overflow-hidden rounded-xl border bg-surface transition ${first ? 'border-amber/50' : 'border-line hover:border-muted/40'}`}
+                  >
+                    <div className={`flex w-16 shrink-0 items-center justify-center font-mono text-2xl font-bold sm:w-20 ${first ? 'text-amber' : 'text-muted'}`}>
+                      {t.position}
                     </div>
-
-                    {/* Info */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <span className="font-semibold text-white truncate">{token.person_name}</span>
-                        {token.priority === 1 && (
-                          <span className="flex items-center gap-1 text-xs bg-warning/20 text-warning border border-warning/30 px-1.5 py-0.5 rounded-lg">
-                            <Crown className="w-3 h-3" /> VIP
-                          </span>
-                        )}
+                    <div className="relative w-0 self-stretch border-l border-dashed border-line">
+                      <Notch className="-left-2 -top-2" />
+                      <Notch className="-bottom-2 -left-2" />
+                    </div>
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3.5">
+                      <div className="min-w-0">
+                        <p className="flex items-center gap-2">
+                          <span className="truncate font-semibold">{t.person_name}</span>
+                          {t.priority === 1 && (
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-amber/15 px-1.5 py-0.5 text-xs font-medium text-amber">
+                              <Crown className="h-3 w-3" /> VIP
+                            </span>
+                          )}
+                        </p>
+                        <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
+                          <span className="font-mono">{t.token_number}</span>
+                          {t.phone && <a href={`tel:${t.phone.replace(/[^0-9+]/g, '')}`} className="inline-flex items-center gap-1 hover:text-ink"><Phone className="h-3 w-3" />{t.phone}</a>}
+                          <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />{timeAgo(t.created_at)}</span>
+                        </p>
+                        {t.notes && <p className="mt-1 truncate text-xs italic text-muted/80">“{t.notes}”</p>}
                       </div>
-                      <div className="flex items-center gap-3 text-xs text-muted">
-                        <span className="font-mono">{token.token_number}</span>
-                        {token.phone && <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{token.phone}</span>}
-                        <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{timeAgo(token.created_at)}</span>
+                      <div className="flex shrink-0 items-center">
+                        <button className="icon-btn" title="Move up" aria-label="Move up" disabled={first || busy !== null}
+                          onClick={() => run(() => tokensApi.moveUp(t.id), t.id)}><ChevronUp className="h-4 w-4" /></button>
+                        <button className="icon-btn" title="Move down" aria-label="Move down" disabled={idx === waiting.length - 1 || busy !== null}
+                          onClick={() => run(() => tokensApi.moveDown(t.id), t.id)}><ChevronDown className="h-4 w-4" /></button>
+                        <button className="icon-btn hover:!text-coral" title="Cancel token" aria-label="Cancel token" disabled={busy !== null}
+                          onClick={() => run(() => tokensApi.cancel(t.id), t.id, `${t.person_name} removed from the line`)}><X className="h-4 w-4" /></button>
                       </div>
-                      {token.notes && <p className="text-xs text-muted/70 mt-1 italic truncate">{token.notes}</p>}
                     </div>
-
-                    {/* Actions */}
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button onClick={() => action(() => tokensApi.moveUp(token.id), token.id)}
-                        disabled={idx === 0 || !!actionLoading}
-                        className="p-1.5 text-muted hover:text-white disabled:opacity-30 rounded-lg transition-colors" title="Move up">
-                        <ChevronUp className="w-4 h-4" />
-                      </button>
-                      <button onClick={() => action(() => tokensApi.moveDown(token.id), token.id)}
-                        disabled={idx === waiting.length - 1 || !!actionLoading}
-                        className="p-1.5 text-muted hover:text-white disabled:opacity-30 rounded-lg transition-colors" title="Move down">
-                        <ChevronDown className="w-4 h-4" />
-                      </button>
-                      {idx === 0 && (
-                        <button onClick={() => action(() => tokensApi.serve(token.id), token.id)}
-                          disabled={!!actionLoading}
-                          className="p-1.5 text-success hover:text-success/80 disabled:opacity-30 rounded-lg transition-colors" title="Serve">
-                          <CheckCircle className="w-4 h-4" />
-                        </button>
-                      )}
-                      <button onClick={() => action(() => tokensApi.cancel(token.id), token.id)}
-                        disabled={!!actionLoading}
-                        className="p-1.5 text-muted hover:text-danger disabled:opacity-30 rounded-lg transition-colors" title="Cancel">
-                        <XCircle className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+                  </li>
+                )
+              })}
+            </ul>
           )
+        ) : history.length === 0 ? (
+          <div className="panel px-6 py-14 text-center text-sm text-muted">Nothing here yet. Served and cancelled tokens will show up here.</div>
         ) : (
-          /* History tab */
-          <div className="space-y-2">
-            {history.length === 0 ? (
-              <div className="text-center py-12 text-muted">No history yet</div>
-            ) : history.map(token => (
-              <div key={token.id} className="bg-surface border border-border rounded-xl p-4 flex items-center gap-3 opacity-80">
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${token.status === 'served' ? 'bg-success/20' : 'bg-danger/20'}`}>
-                  {token.status === 'served' ? <CheckCircle className="w-4 h-4 text-success" /> : <XCircle className="w-4 h-4 text-danger" />}
+          <ul className="space-y-2">
+            {history.map((t) => (
+              <li key={t.id} className="flex items-center gap-4 rounded-xl border border-line bg-surface/60 px-4 py-3">
+                <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${t.status === 'served' ? 'bg-mint/15 text-mint' : 'bg-coral/15 text-coral'}`}>
+                  {t.status === 'served' ? <Check className="h-4 w-4" /> : <X className="h-4 w-4" />}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{t.person_name}</p>
+                  <p className="font-mono text-xs text-muted">{t.token_number}</p>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-white text-sm">{token.person_name}</p>
-                  <p className="text-xs text-muted font-mono">{token.token_number}</p>
+                <div className="text-right text-xs">
+                  <p className={t.status === 'served' ? 'text-mint' : 'text-coral'}>{t.status === 'served' ? 'Served' : 'Cancelled'}</p>
+                  {t.status === 'served' && <p className="text-muted">{formatDuration(t.wait_time_seconds)} wait</p>}
+                  {t.served_at && <p className="text-muted/70">{timeAgo(t.served_at)}</p>}
                 </div>
-                <div className="text-right">
-                  <p className={`text-xs font-medium ${token.status === 'served' ? 'text-success' : 'text-danger'}`}>
-                    {token.status}
-                  </p>
-                  {token.wait_time_seconds && (
-                    <p className="text-xs text-muted">{formatWait(token.wait_time_seconds)} wait</p>
-                  )}
-                </div>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </main>
 
-      {/* Add Token Modal */}
+      <Footer />
+
       {showAdd && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-4 z-50">
-          <div className="bg-surface border border-border rounded-2xl p-6 w-full max-w-md shadow-2xl animate-slide-in">
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="font-semibold text-white text-lg">Add to Queue</h3>
-              <button onClick={() => setShowAdd(false)} className="text-muted hover:text-white"><X className="w-5 h-5" /></button>
+        <Modal title="Add to queue" onClose={() => setShowAdd(false)}>
+          <form onSubmit={addToken} className="space-y-4">
+            <div>
+              <label htmlFor="pname" className="mb-1.5 block text-sm text-muted">Name</label>
+              <input id="pname" className="input" value={form.person_name} autoFocus required maxLength={80}
+                onChange={(e) => setForm((f) => ({ ...f, person_name: e.target.value }))} placeholder="Who is joining?" />
             </div>
-            <form onSubmit={addToken} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-sm text-muted mb-1.5">Name *</label>
-                <input value={form.person_name} onChange={e => setForm(f => ({ ...f, person_name: e.target.value }))}
-                  className="w-full bg-bg border border-border rounded-xl px-4 py-2.5 text-white placeholder-muted/50 focus:outline-none focus:border-accent transition-colors"
-                  placeholder="Person's name" required autoFocus />
-              </div>
-              <div>
-                <label className="block text-sm text-muted mb-1.5">Phone (optional)</label>
-                <input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
-                  className="w-full bg-bg border border-border rounded-xl px-4 py-2.5 text-white placeholder-muted/50 focus:outline-none focus:border-accent transition-colors"
-                  placeholder="+91 ..." />
+                <label htmlFor="pphone" className="mb-1.5 block text-sm text-muted">Phone <span className="text-muted/60">(optional)</span></label>
+                <input id="pphone" className="input" value={form.phone} inputMode="tel"
+                  onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} placeholder="+91 …" />
               </div>
               <div>
-                <label className="block text-sm text-muted mb-1.5">Notes (optional)</label>
-                <input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
-                  className="w-full bg-bg border border-border rounded-xl px-4 py-2.5 text-white placeholder-muted/50 focus:outline-none focus:border-accent transition-colors"
-                  placeholder="Special requirements..." />
+                <label htmlFor="pnotes" className="mb-1.5 block text-sm text-muted">Note <span className="text-muted/60">(optional)</span></label>
+                <input id="pnotes" className="input" value={form.notes} maxLength={120}
+                  onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Anything to know" />
               </div>
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input type="checkbox" checked={form.priority} onChange={e => setForm(f => ({ ...f, priority: e.target.checked }))}
-                  className="w-4 h-4 accent-warning rounded" />
-                <span className="text-sm text-white flex items-center gap-1.5"><Crown className="w-4 h-4 text-warning" /> VIP / Priority</span>
-              </label>
-              <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => setShowAdd(false)}
-                  className="flex-1 border border-border text-muted hover:text-white rounded-xl py-2.5 text-sm transition-colors">
-                  Cancel
-                </button>
-                <button type="submit" disabled={adding}
-                  className="flex-1 bg-accent hover:bg-accentHover disabled:opacity-50 text-white rounded-xl py-2.5 text-sm font-medium transition-colors">
-                  {adding ? 'Adding...' : 'Add to Queue'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            </div>
+            <button
+              type="button" role="switch" aria-checked={form.priority}
+              onClick={() => setForm((f) => ({ ...f, priority: !f.priority }))}
+              className={`flex w-full items-center justify-between rounded-lg border px-3.5 py-3 text-left transition ${form.priority ? 'border-amber/50 bg-amber/10' : 'border-line'}`}
+            >
+              <span className="flex items-center gap-2 text-sm"><Crown className={`h-4 w-4 ${form.priority ? 'text-amber' : 'text-muted'}`} /> Mark as VIP</span>
+              <span className={`flex h-5 w-9 items-center rounded-full p-0.5 transition ${form.priority ? 'bg-amber' : 'bg-line'}`}>
+                <span className={`h-4 w-4 rounded-full bg-bg transition ${form.priority ? 'translate-x-4' : ''}`} />
+              </span>
+            </button>
+            <div className="flex gap-3 pt-1">
+              <button type="button" className="btn btn-ghost flex-1" onClick={() => setShowAdd(false)}>Cancel</button>
+              <button type="submit" className="btn btn-amber flex-1" disabled={adding}>{adding ? 'Adding…' : 'Add to queue'}</button>
+            </div>
+          </form>
+        </Modal>
       )}
     </div>
   )

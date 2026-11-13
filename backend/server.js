@@ -9,8 +9,36 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || require('crypto').randomBytes(32).toString('hex');
 
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10kb' }));
+
+// Basic security headers
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+  });
+  next();
+});
+
+// Small in-memory rate limiter (per IP) to slow down password guessing
+function rateLimit(max, windowMs) {
+  const hits = new Map();
+  setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (v.reset < now) hits.delete(k); }, windowMs).unref();
+  return (req, res, next) => {
+    const now = Date.now();
+    const rec = hits.get(req.ip);
+    if (!rec || rec.reset < now) { hits.set(req.ip, { n: 1, reset: now + windowMs }); return next(); }
+    if (++rec.n > max) return res.status(429).json({ error: 'Too many attempts. Please wait a few minutes and try again.' });
+    next();
+  };
+}
+
+// Input helpers
+const clean = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
 // DB setup — WAL mode for better concurrent reads
 // Built-in node:sqlite (no native compile needed); small shim keeps the better-sqlite3-style API
@@ -82,7 +110,7 @@ if (!existing) {
     people.forEach((p, i) => {
       const served = i < Math.floor(people.length / 3);
       const mins = 40 - i * 5;
-      const num = `${name.substring(0,2).toUpperCase()}${1000 + i}-${String(i + 1).padStart(3,'0')}`;
+      const num = `${name.substring(0,2).toUpperCase()}-${String(i + 1).padStart(3,'0')}`;
       if (served) mkT.run(num, p, '98765432' + (10 + i), qid, 0, 'served', 0, new Date().toISOString().replace('T',' ').slice(0,19), (mins - 10) * 60, `-${mins} minutes`);
       else mkT.run(num, p, '98765432' + (10 + i), qid, ++pos, 'waiting', i === 3 ? 1 : 0, null, null, `-${mins} minutes`);
     });
@@ -128,9 +156,16 @@ function auth(req, res, next) {
 }
 
 // ── Auth ──────────────────────────────────────────────────
-app.post('/api/register', (req, res) => {
-  const { username, password } = req.body;
+app.post('/api/register', rateLimit(15, 10 * 60 * 1000), (req, res) => {
+  const username = clean(req.body?.username, 30);
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  if (username.length < 3) return res.status(400).json({ error: 'Username needs at least 3 characters' });
+  if (!/^[A-Za-z0-9._-]+$/.test(username)) return res.status(400).json({ error: 'Username can use letters, numbers, dot, dash and underscore only' });
+  if (password.length < 6) return res.status(400).json({ error: 'Password needs at least 6 characters' });
+  if (password.length > 72) return res.status(400).json({ error: 'Password is too long (max 72 characters)' });
+  if (db.prepare('SELECT id FROM managers WHERE lower(username) = lower(?)').get(username))
+    return res.status(400).json({ error: 'Username already exists' });
   try {
     const hash = bcrypt.hashSync(password, 10);
     const r = db.prepare('INSERT INTO managers (username, password) VALUES (?, ?)').run(username, hash);
@@ -138,9 +173,11 @@ app.post('/api/register', (req, res) => {
   } catch { res.status(400).json({ error: 'Username already exists' }); }
 });
 
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-  const manager = db.prepare('SELECT * FROM managers WHERE username = ?').get(username);
+app.post('/api/login', rateLimit(40, 10 * 60 * 1000), (req, res) => {
+  const username = clean(req.body?.username, 30);
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  const manager = db.prepare('SELECT * FROM managers WHERE lower(username) = lower(?)').get(username);
   if (!manager || !bcrypt.compareSync(password, manager.password))
     return res.status(401).json({ error: 'Invalid credentials' });
   const token = jwt.sign({ id: manager.id, username: manager.username }, JWT_SECRET, { expiresIn: '7d' });
@@ -162,11 +199,12 @@ app.get('/api/queues', auth, (req, res) => {
 });
 
 app.post('/api/queues', auth, (req, res) => {
-  const { name, description } = req.body;
+  const name = clean(req.body?.name, 60);
+  const description = clean(req.body?.description, 200);
   if (!name) return res.status(400).json({ error: 'Queue name required' });
   const r = db.prepare('INSERT INTO queues (name, description, manager_id) VALUES (?, ?, ?)')
-    .run(name, description || '', req.manager.id);
-  const q = { id: r.lastInsertRowid, name, description: description || '', manager_id: req.manager.id,
+    .run(name, description, req.manager.id);
+  const q = { id: r.lastInsertRowid, name, description, manager_id: req.manager.id,
     waiting_count: 0, served_count: 0, cancelled_count: 0 };
   broadcast(req.manager.id, 'queue_created', q);
   res.json(q);
@@ -175,9 +213,10 @@ app.post('/api/queues', auth, (req, res) => {
 app.put('/api/queues/:id', auth, (req, res) => {
   const queue = db.prepare('SELECT * FROM queues WHERE id=? AND manager_id=?').get(req.params.id, req.manager.id);
   if (!queue) return res.status(404).json({ error: 'Queue not found' });
-  const { name, description } = req.body;
+  const name = clean(req.body?.name, 60);
+  const description = typeof req.body?.description === 'string' ? clean(req.body.description, 200) : queue.description;
   db.prepare('UPDATE queues SET name=?, description=? WHERE id=?')
-    .run(name || queue.name, description ?? queue.description, req.params.id);
+    .run(name || queue.name, description, req.params.id);
   broadcast(req.manager.id, 'queue_updated', { id: +req.params.id });
   res.json({ success: true });
 });
@@ -200,6 +239,8 @@ app.get('/api/queues/:id/tokens', auth, (req, res) => {
 });
 
 app.get('/api/queues/:id/tokens/history', auth, (req, res) => {
+  const owned = db.prepare('SELECT id FROM queues WHERE id=? AND manager_id=?').get(req.params.id, req.manager.id);
+  if (!owned) return res.status(404).json({ error: 'Queue not found' });
   const tokens = db.prepare(`
     SELECT * FROM tokens WHERE queue_id=? AND status!='waiting'
     ORDER BY COALESCE(served_at, created_at) DESC LIMIT 50
@@ -208,22 +249,35 @@ app.get('/api/queues/:id/tokens/history', auth, (req, res) => {
 });
 
 app.post('/api/queues/:id/tokens', auth, (req, res) => {
-  const { person_name, phone, priority, notes } = req.body;
+  const person_name = clean(req.body?.person_name, 80);
+  const phone = clean(req.body?.phone, 20);
+  const notes = clean(req.body?.notes, 200);
+  const priority = Number(req.body?.priority) > 0 ? 1 : 0;
   if (!person_name) return res.status(400).json({ error: 'Person name required' });
+  if (phone && !/^[0-9+\-() ]{4,20}$/.test(phone)) return res.status(400).json({ error: 'Phone can use digits, +, - and brackets only' });
   const queue = db.prepare('SELECT * FROM queues WHERE id=? AND manager_id=?').get(req.params.id, req.manager.id);
   if (!queue) return res.status(404).json({ error: 'Queue not found' });
 
-  const maxRow = db.prepare(`SELECT MAX(position) as mp FROM tokens WHERE queue_id=? AND status='waiting'`).get(req.params.id);
-  const position = (maxRow?.mp || 0) + 1;
-  const ts = String(Date.now()).slice(-4);
-  const token_number = `${queue.name.substring(0,2).toUpperCase()}${ts}-${String(position).padStart(3,'0')}`;
-
-  const r = db.prepare(
-    'INSERT INTO tokens (token_number, person_name, phone, queue_id, position, priority, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(token_number, person_name, phone || '', req.params.id, position, priority || 0, notes || '');
-
-  const token = { id: r.lastInsertRowid, token_number, person_name, phone: phone||'', queue_id: +req.params.id,
-    position, status: 'waiting', priority: priority||0, notes: notes||'', created_at: new Date().toISOString() };
+  let token;
+  db.transaction(() => {
+    // VIP guests join after the last VIP already waiting; everyone else joins at the end.
+    let position;
+    if (priority) {
+      const lastVip = db.prepare(`SELECT MAX(position) mp FROM tokens WHERE queue_id=? AND status='waiting' AND priority>0`).get(queue.id).mp || 0;
+      position = lastVip + 1;
+      db.prepare(`UPDATE tokens SET position = position + 1 WHERE queue_id=? AND status='waiting' AND position >= ?`).run(queue.id, position);
+    } else {
+      position = (db.prepare(`SELECT MAX(position) mp FROM tokens WHERE queue_id=? AND status='waiting'`).get(queue.id).mp || 0) + 1;
+    }
+    const issued = db.prepare('SELECT COUNT(*) c FROM tokens WHERE queue_id=?').get(queue.id).c + 1;
+    const prefix = (queue.name.replace(/[^A-Za-z0-9]/g, '').substring(0, 2) || 'Q').toUpperCase();
+    const token_number = `${prefix}-${String(issued).padStart(3, '0')}`;
+    const r = db.prepare(
+      'INSERT INTO tokens (token_number, person_name, phone, queue_id, position, priority, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(token_number, person_name, phone, queue.id, position, priority, notes);
+    token = { id: r.lastInsertRowid, token_number, person_name, phone, queue_id: queue.id,
+      position, status: 'waiting', priority, notes, created_at: new Date().toISOString() };
+  })();
   broadcast(req.manager.id, 'token_added', token);
   res.json(token);
 });
@@ -308,7 +362,7 @@ app.get('/api/analytics', auth, (req, res) => {
   `).all(mid);
 
   const hourlyTrend = db.prepare(`
-    SELECT strftime('%H:00', t.created_at, 'localtime') as hour,
+    SELECT strftime('%Y-%m-%dT%H:00:00Z', t.created_at) as hour,
            COUNT(*) as tokens_added,
            COUNT(CASE WHEN t.status='served' THEN 1 END) as served
     FROM tokens t JOIN queues q ON q.id=t.queue_id
@@ -330,6 +384,14 @@ app.use(express.static(path.join(__dirname, '../frontend/dist')));
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api')) return res.status(404).json({ error: 'Not found' });
   res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
+});
+
+// JSON errors instead of HTML stack traces (bad JSON body, unexpected failures)
+app.use((err, req, res, next) => {
+  if (err?.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid request body' });
+  if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large' });
+  console.error('Server error:', err?.message);
+  res.status(500).json({ error: 'Something went wrong' });
 });
 
 app.listen(PORT, () => console.log(`QueueFlow backend running on http://localhost:${PORT}`));

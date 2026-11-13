@@ -1,12 +1,14 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
+import { Toaster } from './ui'
 
 export default function App() {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('token'))
   const [username, setUsername] = useState<string>(() => localStorage.getItem('username') || '')
 
   const handleLogin = (tok: string, user: string) => {
+    if (!tok) return
     localStorage.setItem('token', tok)
     localStorage.setItem('username', user)
     setToken(tok)
@@ -20,6 +22,14 @@ export default function App() {
     setUsername('')
   }
 
-  if (!token) return <LoginPage onLogin={handleLogin} />
-  return <DashboardPage username={username} token={token} onLogout={handleLogout} />
+  return (
+    <>
+      {token ? (
+        <DashboardPage username={username} token={token} onLogout={handleLogout} />
+      ) : (
+        <LoginPage onLogin={handleLogin} />
+      )}
+      <Toaster />
+    </>
+  )
 }

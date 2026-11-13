@@ -8,6 +8,20 @@ API.interceptors.request.use(cfg => {
   return cfg
 })
 
+API.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    const url: string = err?.config?.url || ''
+    // An expired or invalid session sends the user back to the sign-in screen instead of leaving a blank page.
+    if (err?.response?.status === 401 && localStorage.getItem('token') && !url.includes('/login') && !url.includes('/register')) {
+      localStorage.removeItem('token')
+      localStorage.removeItem('username')
+      window.location.reload()
+    }
+    return Promise.reject(err)
+  }
+)
+
 export interface Manager { id: number; username: string }
 export interface Queue {
   id: number; name: string; description: string; manager_id: number;

@@ -2,172 +2,194 @@ import { useState, useEffect } from 'react'
 import { analytics } from '../api'
 import type { Analytics } from '../api'
 import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Cell, Legend
+  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell,
 } from 'recharts'
-import { TrendingUp, Users, CheckCircle, XCircle, Clock, ArrowLeft, BarChart2 } from 'lucide-react'
+import { formatDuration, parseDate } from '../lib'
 
-interface Props { onBack: () => void }
+const C = { amber: '#FFB224', mint: '#38D9A0', coral: '#FF6B5B', sky: '#6CB6FF', grid: '#252C38', tick: '#8A93A3' }
 
-function formatWait(secs: number) {
-  if (!secs) return '—'
-  if (secs < 60) return `${secs}s`
-  return `${Math.round(secs / 60)}m`
-}
-
-const COLORS = ['#6366f1','#8b5cf6','#06b6d4','#10b981','#f59e0b','#ef4444','#ec4899','#14b8a6']
-
-const CustomTooltip = ({ active, payload, label }: any) => {
+const ChartTip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null
   return (
-    <div className="bg-surface border border-border rounded-xl p-3 shadow-xl text-xs">
-      <p className="text-muted mb-1">{label}</p>
+    <div className="rounded-lg border border-line bg-raised px-3 py-2 text-xs shadow-xl shadow-black/40">
+      {label && <p className="mb-1 text-muted">{label}</p>}
       {payload.map((p: any, i: number) => (
-        <p key={i} style={{ color: p.color }} className="font-medium">{p.name}: {p.value}</p>
+        <p key={i} className="flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full" style={{ background: p.color || p.payload?.fill }} />
+          {p.name}: <span className="font-mono font-medium">{p.value}</span>
+        </p>
       ))}
     </div>
   )
 }
 
-export default function AnalyticsDashboard({ onBack }: Props) {
+function Legend({ items }: { items: { label: string; color: string }[] }) {
+  return (
+    <div className="flex flex-wrap gap-4 text-xs text-muted">
+      {items.map((i) => (
+        <span key={i.label} className="inline-flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full" style={{ background: i.color }} /> {i.label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+export default function AnalyticsDashboard() {
   const [data, setData] = useState<Analytics | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    analytics.get().then(r => { setData(r.data); setLoading(false) }).catch(() => setLoading(false))
+    analytics.get().then((r) => setData(r.data)).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
-  if (loading) return (
-    <div className="min-h-screen bg-bg flex items-center justify-center">
-      <div className="text-muted animate-pulse">Loading analytics...</div>
-    </div>
-  )
+  if (loading) return <div className="panel h-72 animate-pulse-soft" />
+  if (!data) return <div className="panel px-6 py-14 text-center text-sm text-muted">Could not load analytics. Try refreshing the page.</div>
 
-  if (!data) return (
-    <div className="min-h-screen bg-bg flex items-center justify-center">
-      <p className="text-muted">Failed to load analytics.</p>
-    </div>
-  )
+  const { summary: s, queueStats, hourlyTrend } = data
+  const finished = s.served + s.cancelled
+  const serveRate = finished ? Math.round((s.served / finished) * 100) : 0
 
-  const { summary, queueStats, hourlyTrend } = data
-
-  const statCards = [
-    { label: 'Total Queues', value: summary.totalQueues, icon: BarChart2, color: 'text-accent' },
-    { label: 'Total Tokens', value: summary.totalTokens, icon: Users, color: 'text-warning' },
-    { label: 'Served', value: summary.served, icon: CheckCircle, color: 'text-success' },
-    { label: 'Cancelled', value: summary.cancelled, icon: XCircle, color: 'text-danger' },
-    { label: 'Waiting Now', value: summary.waiting, icon: Users, color: 'text-accent' },
-    { label: 'Avg Wait Time', value: formatWait(summary.avgWaitSeconds), icon: Clock, color: 'text-warning' },
+  const tiles = [
+    { label: 'Queues', value: s.totalQueues, tone: 'text-ink' },
+    { label: 'Tokens issued', value: s.totalTokens, tone: 'text-ink' },
+    { label: 'Waiting now', value: s.waiting, tone: 'text-amber' },
+    { label: 'Served', value: s.served, tone: 'text-mint' },
+    { label: 'Cancelled', value: s.cancelled, tone: 'text-coral' },
+    { label: 'Average wait', value: formatDuration(s.avgWaitSeconds), tone: 'text-ink' },
   ]
 
+  const mix = [
+    { name: 'Waiting', value: s.waiting, fill: C.amber },
+    { name: 'Served', value: s.served, fill: C.mint },
+    { name: 'Cancelled', value: s.cancelled, fill: C.coral },
+  ].filter((m) => m.value > 0)
+
+  // Server sends UTC hour buckets; show the last 24 local hours, empty hours as zero.
+  const byHour = new Map<number, { tokens_added: number; served: number }>()
+  hourlyTrend.forEach((h) => {
+    const d = parseDate(h.hour)
+    d.setMinutes(0, 0, 0)
+    byHour.set(d.getTime(), h)
+  })
+  const trend = Array.from({ length: 24 }, (_, i) => {
+    const d = new Date(Date.now() - (23 - i) * 3600_000)
+    d.setMinutes(0, 0, 0)
+    const h = byHour.get(d.getTime())
+    return { hour: d.toLocaleTimeString([], { hour: 'numeric' }), tokens_added: h?.tokens_added ?? 0, served: h?.served ?? 0 }
+  })
+  const hasActivity = hourlyTrend.length > 0
+
+  const withWait = queueStats.filter((q: any) => q.avg_wait > 0)
+  const maxWait = Math.max(1, ...withWait.map((q: any) => q.avg_wait))
+
+  if (s.totalQueues === 0) {
+    return (
+      <div className="panel px-6 py-16 text-center">
+        <p className="text-lg font-semibold">No numbers yet</p>
+        <p className="mt-1 text-sm text-muted">Create a queue and add a few people to see analytics here.</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="min-h-screen bg-bg">
-      <header className="bg-surface border-b border-border sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button onClick={onBack} className="p-2 text-muted hover:text-white rounded-lg transition-colors">
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <div>
-              <h1 className="font-bold text-white">Analytics</h1>
-              <p className="text-xs text-muted">Queue performance overview</p>
-            </div>
-          </div>
-          <TrendingUp className="w-5 h-5 text-accent" />
-        </div>
-      </header>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Analytics</h1>
+        <p className="mt-1 text-sm text-muted">How your queues are performing.</p>
+      </div>
 
-      <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
-        {/* Summary cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {statCards.map(s => (
-            <div key={s.label} className="bg-surface border border-border rounded-xl p-4">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-xs text-muted">{s.label}</p>
-                <s.icon className={`w-4 h-4 ${s.color}`} />
+      <div className="panel grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+        {tiles.map((t, i) => (
+          <div key={t.label} className={`px-5 py-5 ${i > 0 ? 'lg:border-l lg:border-line' : ''} ${i % 2 === 1 ? 'border-l border-line lg:border-l' : ''} ${i > 1 ? 'border-t border-line lg:border-t-0' : ''}`}>
+            <p className="text-sm text-muted">{t.label}</p>
+            <p className={`tabular mt-1 text-3xl font-semibold tracking-tight ${t.tone}`}>{t.value}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+        <section className="panel p-5">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-semibold">People per queue</h2>
+            <Legend items={[{ label: 'Waiting', color: C.amber }, { label: 'Served', color: C.mint }, { label: 'Cancelled', color: C.coral }]} />
+          </div>
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={queueStats} margin={{ top: 4, right: 4, left: -22, bottom: 0 }} barGap={3}>
+              <CartesianGrid stroke={C.grid} strokeDasharray="3 4" vertical={false} />
+              <XAxis dataKey="name" tick={{ fill: C.tick, fontSize: 12 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill: C.tick, fontSize: 12 }} axisLine={false} tickLine={false} allowDecimals={false} />
+              <Tooltip content={<ChartTip />} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
+              <Bar dataKey="waiting" name="Waiting" fill={C.amber} radius={[5, 5, 0, 0]} />
+              <Bar dataKey="served" name="Served" fill={C.mint} radius={[5, 5, 0, 0]} />
+              <Bar dataKey="cancelled" name="Cancelled" fill={C.coral} radius={[5, 5, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </section>
+
+        <section className="panel flex flex-col p-5">
+          <h2 className="font-semibold">Outcome mix</h2>
+          {mix.length ? (
+            <>
+              <div className="relative mx-auto mt-2 h-[190px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={mix} dataKey="value" nameKey="name" innerRadius={62} outerRadius={84} paddingAngle={3} stroke="none">
+                      {mix.map((m) => <Cell key={m.name} fill={m.fill} />)}
+                    </Pie>
+                    <Tooltip content={<ChartTip />} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="tabular text-3xl font-semibold text-mint">{serveRate}%</span>
+                  <span className="text-xs text-muted">served rate</span>
+                </div>
               </div>
-              <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
-            </div>
-          ))}
-        </div>
+              <div className="mt-auto pt-2"><Legend items={mix.map((m) => ({ label: `${m.name} ${m.value}`, color: m.fill }))} /></div>
+            </>
+          ) : <p className="mt-6 text-sm text-muted">No tokens yet.</p>}
+        </section>
+      </div>
 
-        {/* Queue stats bar chart */}
-        {queueStats.length > 0 && (
-          <div className="bg-surface border border-border rounded-2xl p-5">
-            <h2 className="font-semibold text-white mb-4 flex items-center gap-2">
-              <BarChart2 className="w-4 h-4 text-accent" /> Tokens per Queue
-            </h2>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={queueStats} margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" vertical={false} />
-                <XAxis dataKey="name" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip content={<CustomTooltip />} />
-                <Legend iconSize={10} wrapperStyle={{ fontSize: 11, color: '#9ca3af' }} />
-                <Bar dataKey="waiting" name="Waiting" radius={[4,4,0,0]} fill="#6366f1">
-                  {queueStats.map((_: any, i: number) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                </Bar>
-                <Bar dataKey="served" name="Served" radius={[4,4,0,0]} fill="#10b981" />
-                <Bar dataKey="cancelled" name="Cancelled" radius={[4,4,0,0]} fill="#ef4444" />
-              </BarChart>
-            </ResponsiveContainer>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <section className="panel p-5">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-semibold">Last 24 hours</h2>
+            <Legend items={[{ label: 'Added', color: C.sky }, { label: 'Served', color: C.mint }]} />
           </div>
-        )}
-
-        {/* Hourly trend */}
-        {hourlyTrend.length > 0 && (
-          <div className="bg-surface border border-border rounded-2xl p-5">
-            <h2 className="font-semibold text-white mb-4 flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-accent" /> Last 24 Hours Activity
-            </h2>
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={hourlyTrend} margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2a2a3a" vertical={false} />
-                <XAxis dataKey="hour" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
-                <Tooltip content={<CustomTooltip />} />
-                <Legend iconSize={10} wrapperStyle={{ fontSize: 11, color: '#9ca3af' }} />
-                <Line type="monotone" dataKey="tokens_added" name="Added" stroke="#6366f1" strokeWidth={2} dot={{ fill: '#6366f1', r: 3 }} />
-                <Line type="monotone" dataKey="served" name="Served" stroke="#10b981" strokeWidth={2} dot={{ fill: '#10b981', r: 3 }} />
+          {hasActivity ? (
+            <ResponsiveContainer width="100%" height={210}>
+              <LineChart data={trend} margin={{ top: 4, right: 8, left: -22, bottom: 0 }}>
+                <CartesianGrid stroke={C.grid} strokeDasharray="3 4" vertical={false} />
+                <XAxis dataKey="hour" tick={{ fill: C.tick, fontSize: 12 }} axisLine={false} tickLine={false} interval={3} />
+                <YAxis tick={{ fill: C.tick, fontSize: 12 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip content={<ChartTip />} />
+                <Line type="monotone" dataKey="tokens_added" name="Added" stroke={C.sky} strokeWidth={2.5} dot={{ r: 3, fill: C.sky, strokeWidth: 0 }} />
+                <Line type="monotone" dataKey="served" name="Served" stroke={C.mint} strokeWidth={2.5} dot={{ r: 3, fill: C.mint, strokeWidth: 0 }} />
               </LineChart>
             </ResponsiveContainer>
-          </div>
-        )}
+          ) : <p className="py-16 text-center text-sm text-muted">No activity in the last 24 hours.</p>}
+        </section>
 
-        {/* Per-queue avg wait */}
-        {queueStats.some((q: any) => q.avg_wait > 0) && (
-          <div className="bg-surface border border-border rounded-2xl p-5">
-            <h2 className="font-semibold text-white mb-4 flex items-center gap-2">
-              <Clock className="w-4 h-4 text-warning" /> Average Wait Time per Queue
-            </h2>
-            <div className="space-y-3">
-              {queueStats.filter((q: any) => q.avg_wait > 0).map((q: any, i: number) => {
-                const pct = Math.min(100, (q.avg_wait / 3600) * 100)
-                return (
-                  <div key={i}>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-white">{q.name}</span>
-                      <span className="text-warning font-mono">{formatWait(Math.round(q.avg_wait))}</span>
-                    </div>
-                    <div className="h-2 bg-bg rounded-full overflow-hidden">
-                      <div className="h-full bg-gradient-to-r from-accent to-warning rounded-full transition-all"
-                        style={{ width: `${pct}%` }} />
-                    </div>
+        <section className="panel p-5">
+          <h2 className="mb-4 font-semibold">Average wait by queue</h2>
+          {withWait.length ? (
+            <ul className="space-y-4">
+              {withWait.map((q: any) => (
+                <li key={q.id}>
+                  <div className="mb-1.5 flex justify-between text-sm">
+                    <span>{q.name}</span>
+                    <span className="font-mono text-amber">{formatDuration(Math.round(q.avg_wait))}</span>
                   </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {queueStats.length === 0 && (
-          <div className="text-center py-16 bg-surface border border-border rounded-2xl">
-            <BarChart2 className="w-10 h-10 text-muted mx-auto mb-3" />
-            <p className="text-white font-medium">No data yet</p>
-            <p className="text-muted text-sm">Create queues and add tokens to see analytics</p>
-          </div>
-        )}
-      </main>
+                  <div className="h-2 overflow-hidden rounded-full bg-bg">
+                    <div className="h-full rounded-full bg-amber transition-all" style={{ width: `${Math.max(6, (q.avg_wait / maxWait) * 100)}%` }} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : <p className="py-16 text-center text-sm text-muted">Serve a few people to see wait times.</p>}
+        </section>
+      </div>
     </div>
   )
 }
